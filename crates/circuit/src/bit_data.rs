@@ -15,6 +15,8 @@ use hashbrown::HashMap;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 
 /// Private wrapper for Python-side Bit instances that implements
@@ -80,9 +82,11 @@ pub(crate) struct BitData<T> {
     cached: Py<PyList>,
 }
 
+pub(crate) struct BitNotFoundError;
+
 impl<T> BitData<T>
 where
-    T: From<BitType>,
+    T: From<BitType> + Copy,
     BitType: From<T>,
 {
     pub fn new(py: Python<'_>, description: String) -> Self {
@@ -114,8 +118,29 @@ where
 
     /// Finds the native bit index of the given Python bit.
     #[inline]
-    pub fn find(&self, bit: &Bound<PyAny>) -> Option<&T> {
-        self.indices.get(&BitAsKey::new(bit))
+    pub fn find(&self, bit: &Bound<PyAny>) -> Option<T> {
+        self.indices.get(&BitAsKey::new(bit)).copied()
+    }
+
+    pub fn map_bits<'py>(
+        &self,
+        bits: impl IntoIterator<Item = Bound<'py, PyAny>>,
+    ) -> Result<impl Iterator<Item = T>, BitNotFoundError> {
+        let v: Result<Vec<_>, _> = bits
+            .into_iter()
+            .map(|b| {
+                self.indices
+                    .get(&BitAsKey::new(&b))
+                    .copied()
+                    .ok_or(BitNotFoundError)
+            })
+            .collect();
+        v.map(|x| x.into_iter())
+    }
+
+    pub fn map_indices(&self, bits: &[T]) -> impl Iterator<Item = &Py<PyAny>> + ExactSizeIterator {
+        let v: Vec<_> = bits.iter().map(|i| self.get(*i).unwrap()).collect();
+        v.into_iter()
     }
 
     /// Gets the Python bit corresponding to the given native
@@ -126,7 +151,7 @@ where
     }
 
     /// Adds a new Python bit.
-    pub fn add(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<()> {
+    pub fn add(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<T> {
         if self.bits.len() != self.cached.bind(bit.py()).len() {
             return Err(PyRuntimeError::new_err(
             format!("This circuit's {} list has become out of sync with the circuit data. Did something modify it?", self.description)
@@ -150,6 +175,24 @@ where
                 "Existing bit {:?} cannot be re-added in strict mode.",
                 bit
             )));
+        }
+        Ok(idx.into())
+    }
+
+    pub fn remove_indices<I>(&mut self, py: Python, indices: I) -> PyResult<()>
+    where
+        I: IntoIterator<Item = T>,
+    {
+        for index in indices {
+            let index = <BitType as From<T>>::from(index) as usize;
+            self.cached.bind(py).del_item(index)?;
+            let bit = self.bits.remove(index);
+            self.indices.remove(&BitAsKey::new(bit.bind(py)));
+        }
+        // Update indices.
+        for (i, bit) in self.bits.iter().enumerate() {
+            self.indices
+                .insert(BitAsKey::new(bit.bind(py)), (i as BitType).into());
         }
         Ok(())
     }

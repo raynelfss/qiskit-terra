@@ -1123,8 +1123,11 @@ dependencies = [
 name = "qiskit-circuit"
 version = "1.2.0"
 dependencies = [
+ "ahash 0.8.11",
  "hashbrown 0.14.5",
+ "indexmap 2.2.6",
  "pyo3",
+ "rustworkx-core",
 ]
 
 [[package]]

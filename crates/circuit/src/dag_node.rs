@@ -11,6 +11,7 @@
 // that they have been altered from the originals.
 
 use crate::circuit_instruction::CircuitInstruction;
+use crate::TupleLikeArg;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySequence, PyString, PyTuple};
 use pyo3::{intern, PyObject, PyResult};
@@ -64,20 +65,44 @@ pub struct DAGOpNode {
     pub sort_key: PyObject,
 }
 
+impl DAGOpNode {
+    pub fn new(
+        py: Python,
+        id: isize,
+        op: Py<PyAny>,
+        qargs: Option<Py<PyTuple>>,
+        cargs: Option<Py<PyTuple>>,
+        sort_key: Py<PyAny>,
+    ) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            (
+                DAGOpNode {
+                    instruction: CircuitInstruction {
+                        operation: op,
+                        qubits: qargs.unwrap_or_else(|| PyTuple::empty_bound(py).unbind()),
+                        clbits: cargs.unwrap_or_else(|| PyTuple::empty_bound(py).unbind()),
+                    },
+                    sort_key,
+                },
+                DAGNode { _node_id: id },
+            ),
+        )
+    }
+}
+
 #[pymethods]
 impl DAGOpNode {
     #[new]
-    fn new(
+    pub fn py_new(
         py: Python,
         op: PyObject,
-        qargs: Option<&Bound<PySequence>>,
-        cargs: Option<&Bound<PySequence>>,
+        qargs: Option<TupleLikeArg>,
+        cargs: Option<TupleLikeArg>,
         dag: Option<&Bound<PyAny>>,
-    ) -> PyResult<(Self, DAGNode)> {
-        let qargs =
-            qargs.map_or_else(|| Ok(PyTuple::empty_bound(py)), PySequenceMethods::to_tuple)?;
-        let cargs =
-            cargs.map_or_else(|| Ok(PyTuple::empty_bound(py)), PySequenceMethods::to_tuple)?;
+    ) -> PyResult<Py<Self>> {
+        let qargs = qargs.map_or_else(|| PyTuple::empty_bound(py), |q| q.value);
+        let cargs = cargs.map_or_else(|| PyTuple::empty_bound(py), |c| c.value);
 
         let sort_key = match dag {
             Some(dag) => {
@@ -107,17 +132,20 @@ impl DAGOpNode {
             None => qargs.str()?.into_any(),
         };
 
-        Ok((
-            DAGOpNode {
-                instruction: CircuitInstruction {
-                    operation: op,
-                    qubits: qargs.unbind(),
-                    clbits: cargs.unbind(),
+        Py::new(
+            py,
+            (
+                DAGOpNode {
+                    instruction: CircuitInstruction {
+                        operation: op,
+                        qubits: qargs.unbind(),
+                        clbits: cargs.unbind(),
+                    },
+                    sort_key: sort_key.unbind(),
                 },
-                sort_key: sort_key.unbind(),
-            },
-            DAGNode { _node_id: -1 },
-        ))
+                DAGNode { _node_id: -1 },
+            ),
+        )
     }
 
     fn __reduce__(slf: PyRef<Self>, py: Python) -> PyObject {
@@ -211,10 +239,25 @@ pub struct DAGInNode {
     sort_key: PyObject,
 }
 
+impl DAGInNode {
+    pub fn new(py: Python, id: isize, wire: PyObject) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            (
+                DAGInNode {
+                    wire,
+                    sort_key: PyList::empty_bound(py).str()?.into_any().unbind(),
+                },
+                DAGNode { _node_id: id },
+            ),
+        )
+    }
+}
+
 #[pymethods]
 impl DAGInNode {
     #[new]
-    fn new(py: Python, wire: PyObject) -> PyResult<(Self, DAGNode)> {
+    fn py_new(py: Python, wire: PyObject) -> PyResult<(Self, DAGNode)> {
         Ok((
             DAGInNode {
                 wire,
@@ -251,10 +294,25 @@ pub struct DAGOutNode {
     sort_key: PyObject,
 }
 
+impl DAGOutNode {
+    pub fn new(py: Python, id: isize, wire: PyObject) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            (
+                DAGOutNode {
+                    wire,
+                    sort_key: PyList::empty_bound(py).str()?.into_any().unbind(),
+                },
+                DAGNode { _node_id: id },
+            ),
+        )
+    }
+}
+
 #[pymethods]
 impl DAGOutNode {
     #[new]
-    fn new(py: Python, wire: PyObject) -> PyResult<(Self, DAGNode)> {
+    fn py_new(py: Python, wire: PyObject) -> PyResult<(Self, DAGNode)> {
         Ok((
             DAGOutNode {
                 wire,

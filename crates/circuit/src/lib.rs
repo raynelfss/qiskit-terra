@@ -12,13 +12,18 @@
 
 pub mod circuit_data;
 pub mod circuit_instruction;
-pub mod slotted_cache;
+pub mod dag_circuit;
+pub mod interner;
 
 mod bit_data;
+mod dag_node;
+mod error;
 mod packed_instruction;
 
 use pyo3::prelude::*;
-use pyo3::types::PySlice;
+use pyo3::types::iter::BoundTupleIterator;
+use pyo3::types::{PySequence, PySlice, PyTuple};
+use std::ops::Deref;
 
 /// A private enumeration type used to extract arguments to pymethod
 /// that may be either an index or a slice
@@ -39,10 +44,22 @@ trait PyNativeMapper<T: Copy> {
 }
 
 pub(crate) type BitType = u32;
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct Qubit(BitType);
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct Clbit(BitType);
+
+pub struct TupleLikeArg<'py> {
+    value: Bound<'py, PyTuple>,
+}
+
+impl<'py> FromPyObject<'py> for TupleLikeArg<'py> {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(TupleLikeArg {
+            value: ob.downcast::<PySequence>()?.to_tuple()?,
+        })
+    }
+}
 
 impl From<BitType> for Qubit {
     fn from(value: BitType) -> Self {
@@ -85,5 +102,6 @@ trait Interner<T> {
 pub fn circuit(m: Bound<PyModule>) -> PyResult<()> {
     m.add_class::<circuit_data::CircuitData>()?;
     m.add_class::<circuit_instruction::CircuitInstruction>()?;
+    m.add_class::<dag_circuit::DAGCircuit>()?;
     Ok(())
 }

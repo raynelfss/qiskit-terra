@@ -12,8 +12,8 @@
 
 use crate::bit_data::BitData;
 use crate::circuit_instruction::CircuitInstruction;
+use crate::interner::{Index, IndexedInterner};
 use crate::packed_instruction::{InstructionPacker, PackedInstruction};
-use crate::slotted_cache::{CacheSlot, SlottedCache};
 use crate::Interner;
 use crate::{BitType, Clbit, PyNativeMapper, Qubit, SliceOrInt};
 
@@ -79,7 +79,7 @@ pub struct CircuitData {
     /// The packed instruction listing.
     data: Vec<PackedInstruction>,
     /// The cache used to intern instruction bits.
-    args_cache: SlottedCache<Vec<BitType>>,
+    args_cache: IndexedInterner<Vec<BitType>>,
     /// Qubits registered in the circuit.
     qubits: BitData<Qubit>,
     /// Clbits registered in the circuit.
@@ -99,7 +99,7 @@ impl CircuitData {
     ) -> PyResult<Self> {
         let mut self_ = CircuitData {
             data: Vec::new(),
-            args_cache: SlottedCache::new(),
+            args_cache: IndexedInterner::new(),
             qubits: BitData::new(py, "qubits".to_string()),
             clbits: BitData::new(py, "clbits".to_string()),
         };
@@ -174,7 +174,8 @@ impl CircuitData {
     ///         was provided.
     #[pyo3(signature = (bit, *, strict=true))]
     pub fn add_qubit(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<()> {
-        self.qubits.add(py, bit, strict)
+        self.qubits.add(py, bit, strict)?;
+        Ok(())
     }
 
     /// Registers a :class:`.Clbit` instance.
@@ -188,7 +189,8 @@ impl CircuitData {
     ///         was provided.
     #[pyo3(signature = (bit, *, strict=true))]
     pub fn add_clbit(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<()> {
-        self.clbits.add(py, bit, strict)
+        self.clbits.add(py, bit, strict)?;
+        Ok(())
     }
 
     /// Performs a shallow copy.
@@ -521,7 +523,7 @@ impl CircuitData {
                     .get(inst.qubits_id)
                     .iter()
                     .map(|b| {
-                        Ok(*self
+                        Ok(self
                             .qubits
                             .find(other.qubits.get(Qubit(*b)).unwrap().bind(py))
                             .unwrap())
@@ -532,7 +534,7 @@ impl CircuitData {
                     .get(inst.clbits_id)
                     .iter()
                     .map(|b| {
-                        Ok(*self
+                        Ok(self
                             .clbits
                             .find(other.clbits.get(Clbit(*b)).unwrap().bind(py))
                             .unwrap())
@@ -672,7 +674,7 @@ impl CircuitData {
 
 impl PyNativeMapper<Qubit> for CircuitData {
     fn map_to_native(&self, bit: &Bound<PyAny>) -> Option<Qubit> {
-        self.qubits.find(bit).copied()
+        self.qubits.find(bit)
     }
 
     fn map_to_py(&self, bit: Qubit) -> Option<&PyObject> {
@@ -682,7 +684,7 @@ impl PyNativeMapper<Qubit> for CircuitData {
 
 impl PyNativeMapper<Clbit> for CircuitData {
     fn map_to_native(&self, bit: &Bound<PyAny>) -> Option<Clbit> {
-        self.clbits.find(bit).copied()
+        self.clbits.find(bit)
     }
 
     fn map_to_py(&self, bit: Clbit) -> Option<&PyObject> {
@@ -692,7 +694,7 @@ impl PyNativeMapper<Clbit> for CircuitData {
 
 impl<T: Into<BitType> + From<BitType>> Interner<Vec<T>> for CircuitData {
     type Error = PyErr;
-    type InternedType = CacheSlot;
+    type InternedType = Index;
 
     fn intern(&mut self, item: Vec<T>) -> Result<Self::InternedType, Self::Error> {
         self.args_cache
