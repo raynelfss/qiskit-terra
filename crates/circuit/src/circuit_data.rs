@@ -10,11 +10,11 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
-use crate::bit_data::BitData;
+use crate::bit_data::{BitData, BitNotFoundError};
 use crate::circuit_instruction::CircuitInstruction;
-use crate::interner::{Index, IndexedInterner};
-use crate::packed_instruction::{InstructionPacker, PackedInstruction};
-use crate::Interner;
+use crate::interner::{CacheFullError, IndexedInterner, Interner, InternerKey};
+use crate::packed_instruction::PackedInstruction;
+use crate::{Clbit, Qubit, SliceOrInt};
 use crate::{BitType, Clbit, PyNativeMapper, Qubit, SliceOrInt};
 
 use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
@@ -79,11 +79,28 @@ pub struct CircuitData {
     /// The packed instruction listing.
     data: Vec<PackedInstruction>,
     /// The cache used to intern instruction bits.
-    args_cache: IndexedInterner<Vec<BitType>>,
+    qargs_interner: IndexedInterner<Vec<Qubit>>,
+    /// The cache used to intern instruction bits.
+    cargs_interner: IndexedInterner<Vec<Clbit>>,
     /// Qubits registered in the circuit.
     qubits: BitData<Qubit>,
     /// Clbits registered in the circuit.
     clbits: BitData<Clbit>,
+}
+
+impl<'py> From<BitNotFoundError<'py>> for PyErr {
+    fn from(error: BitNotFoundError) -> Self {
+        PyKeyError::new_err(format!(
+            "Bit {:?} has not been added to this circuit.",
+            error.0
+        ))
+    }
+}
+
+impl From<CacheFullError> for PyErr {
+    fn from(_: CacheFullError) -> Self {
+        PyRuntimeError::new_err("The bit operands cache is full!")
+    }
 }
 
 #[pymethods]
@@ -99,7 +116,8 @@ impl CircuitData {
     ) -> PyResult<Self> {
         let mut self_ = CircuitData {
             data: Vec::new(),
-            args_cache: IndexedInterner::new(),
+            qargs_interner: IndexedInterner::new(),
+            cargs_interner: IndexedInterner::new(),
             qubits: BitData::new(py, "qubits".to_string()),
             clbits: BitData::new(py, "clbits".to_string()),
         };
@@ -148,6 +166,16 @@ impl CircuitData {
         self.qubits.cached().clone_ref(py)
     }
 
+    /// Return the number of qubits. This is equivalent to the length of the list returned by
+    /// :meth:`.CircuitData.qubits`
+    ///
+    /// Returns:
+    ///     int: The number of qubits.
+    #[getter]
+    pub fn num_qubits(&self) -> usize {
+        self.qubits.len()
+    }
+
     /// Returns the current sequence of registered :class:`.Clbit`
     /// instances as a list.
     ///
@@ -163,6 +191,25 @@ impl CircuitData {
         self.clbits.cached().clone_ref(py)
     }
 
+    /// Return the number of clbits. This is equivalent to the length of the list returned by
+    /// :meth:`.CircuitData.clbits`.
+    ///
+    /// Returns:
+    ///     int: The number of clbits.
+    #[getter]
+    pub fn num_clbits(&self) -> usize {
+        self.clbits.len()
+    }
+
+    /// Return the width of the circuit. This is the number of qubits plus the
+    /// number of clbits.
+    ///
+    /// Returns:
+    ///     int: The width of the circuit.
+    pub fn width(&self) -> usize {
+        self.num_qubits() + self.num_clbits()
+    }
+
     /// Registers a :class:`.Qubit` instance.
     ///
     /// Args:
@@ -174,8 +221,7 @@ impl CircuitData {
     ///         was provided.
     #[pyo3(signature = (bit, *, strict=true))]
     pub fn add_qubit(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<()> {
-        self.qubits.add(py, bit, strict)?;
-        Ok(())
+        self.qubits.add(py, bit, strict)
     }
 
     /// Registers a :class:`.Clbit` instance.
@@ -189,8 +235,7 @@ impl CircuitData {
     ///         was provided.
     #[pyo3(signature = (bit, *, strict=true))]
     pub fn add_clbit(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<()> {
-        self.clbits.add(py, bit, strict)?;
-        Ok(())
+        self.clbits.add(py, bit, strict)
     }
 
     /// Performs a shallow copy.
@@ -205,7 +250,8 @@ impl CircuitData {
             None,
             0,
         )?;
-        res.args_cache = self.args_cache.clone();
+        res.qargs_interner = self.qargs_interner.clone();
+        res.cargs_interner = self.cargs_interner.clone();
         res.data.clone_from(&self.data);
         Ok(res)
     }
@@ -229,11 +275,11 @@ impl CircuitData {
         let qubits = PySet::empty_bound(py)?;
         let clbits = PySet::empty_bound(py)?;
         for inst in self.data.iter() {
-            for b in self.args_cache.get(inst.qubits_id).iter() {
-                qubits.add(self.qubits.get(Qubit(*b)).unwrap().clone_ref(py))?;
+            for b in self.intern_context.lookup(inst.qubits_id).iter() {
+                qubits.add(self.qubits_native[*b as usize].clone_ref(py))?;
             }
-            for b in self.args_cache.get(inst.clbits_id).iter() {
-                clbits.add(self.clbits.get(Clbit(*b)).unwrap().clone_ref(py))?;
+            for b in self.intern_context.lookup(inst.clbits_id).iter() {
+                clbits.add(self.clbits_native[*b as usize].clone_ref(py))?;
             }
         }
 
@@ -342,21 +388,21 @@ impl CircuitData {
     ) -> PyResult<()> {
         let mut temp = CircuitData::new(py, qubits, clbits, None, 0)?;
         if qubits.is_some() {
-            if temp.qubits.len() < self.qubits.len() {
+            if temp.num_qubits() < self.num_qubits() {
                 return Err(PyValueError::new_err(format!(
                     "Replacement 'qubits' of size {:?} must contain at least {:?} bits.",
-                    temp.qubits.len(),
-                    self.qubits.len(),
+                    temp.num_qubits(),
+                    self.num_qubits(),
                 )));
             }
             mem::swap(&mut temp.qubits, &mut self.qubits);
         }
         if clbits.is_some() {
-            if temp.clbits.len() < self.clbits.len() {
+            if temp.num_clbits() < self.num_clbits() {
                 return Err(PyValueError::new_err(format!(
                     "Replacement 'clbits' of size {:?} must contain at least {:?} bits.",
-                    temp.clbits.len(),
-                    self.clbits.len(),
+                    temp.num_clbits(),
+                    self.num_clbits(),
                 )));
             }
             mem::swap(&mut temp.clbits, &mut self.clbits);
@@ -480,7 +526,7 @@ impl CircuitData {
                 let index = self.convert_py_index(index)?;
                 let value: PyRef<CircuitInstruction> = value.extract()?;
                 let mut packed = self.pack(py, value)?;
-                std::mem::swap(&mut packed, &mut self.data[index]);
+                mem::swap(&mut packed, &mut self.data[index]);
                 Ok(())
             }
         }
@@ -519,8 +565,9 @@ impl CircuitData {
             self.data.reserve(other.data.len());
             for inst in other.data.iter() {
                 let qubits = other
-                    .args_cache
-                    .get(inst.qubits_id)
+                    .qargs_interner
+                    .intern(inst.qubits_id)
+                    .value
                     .iter()
                     .map(|b| {
                         Ok(self
@@ -530,8 +577,9 @@ impl CircuitData {
                     })
                     .collect::<PyResult<Vec<Qubit>>>()?;
                 let clbits = other
-                    .args_cache
-                    .get(inst.clbits_id)
+                    .cargs_interner
+                    .intern(inst.clbits_id)
+                    .value
                     .iter()
                     .map(|b| {
                         Ok(self
@@ -541,12 +589,14 @@ impl CircuitData {
                     })
                     .collect::<PyResult<Vec<Clbit>>>()?;
 
-                let qubits_id = self.intern(qubits)?;
-                let clbits_id = self.intern(clbits)?;
+                let qubits_id =
+                    Interner::intern(&mut self.qargs_interner, InternerKey::Value(qubits))?;
+                let clbits_id =
+                    Interner::intern(&mut self.cargs_interner, InternerKey::Value(clbits))?;
                 self.data.push(PackedInstruction {
                     op: inst.op.clone_ref(py),
-                    qubits_id,
-                    clbits_id,
+                    qubits_id: qubits_id.index,
+                    clbits_id: clbits_id.index,
                 });
             }
             return Ok(());
@@ -671,42 +721,23 @@ impl CircuitData {
         Ok(index as usize)
     }
 }
-
-impl PyNativeMapper<Qubit> for CircuitData {
-    fn map_to_native(&self, bit: &Bound<PyAny>) -> Option<Qubit> {
-        self.qubits.find(bit)
-    }
-
-    fn map_to_py(&self, bit: Qubit) -> Option<&PyObject> {
-        self.qubits.get(bit)
-    }
-}
-
-impl PyNativeMapper<Clbit> for CircuitData {
-    fn map_to_native(&self, bit: &Bound<PyAny>) -> Option<Clbit> {
-        self.clbits.find(bit)
-    }
-
-    fn map_to_py(&self, bit: Clbit) -> Option<&PyObject> {
-        self.clbits.get(bit)
-    }
-}
-
-impl<T: Into<BitType> + From<BitType>> Interner<Vec<T>> for CircuitData {
-    type Error = PyErr;
-    type InternedType = Index;
-
-    fn intern(&mut self, item: Vec<T>) -> Result<Self::InternedType, Self::Error> {
-        self.args_cache
-            .insert(item.into_iter().map(|b| b.into()).collect())
-            .map_err(|_| PyRuntimeError::new_err("Interner capacity exceeded!"))
-    }
-
-    fn get_interned(&self, interned: &Self::InternedType) -> Vec<T> {
-        self.args_cache
-            .get(*interned)
-            .iter()
-            .map(|b| (*b).into())
-            .collect()
+    fn pack(
+        &mut self,
+        py: Python,
+        value: PyRef<CircuitInstruction>,
+    ) -> PyResult<PackedInstruction> {
+        let qubits = Interner::intern(
+            &mut self.qargs_interner,
+            InternerKey::Value(self.qubits.map_bits(value.qubits.bind(py))?.collect()),
+        )?;
+        let clbits = Interner::intern(
+            &mut self.cargs_interner,
+            InternerKey::Value(self.clbits.map_bits(value.clbits.bind(py))?.collect()),
+        )?;
+        Ok(PackedInstruction {
+            op: value.operation.clone_ref(py),
+            qubits_id: qubits.index,
+            clbits_id: clbits.index,
+        })
     }
 }

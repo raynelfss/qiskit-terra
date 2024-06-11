@@ -12,8 +12,9 @@
 
 pub mod circuit_data;
 pub mod circuit_instruction;
-pub mod dag_circuit;
-pub mod interner;
+
+mod bit_data;
+mod interner;
 
 mod bit_data;
 mod dag_node;
@@ -35,19 +36,11 @@ pub enum SliceOrInt<'a> {
     Slice(Bound<'a, PySlice>),
 }
 
-/// A private trait template implemented by container
-/// structs that maintain a mapping between a Python
-/// object and its native Rust representation, `T`.
-trait PyNativeMapper<T: Copy> {
-    fn map_to_native(&self, any: &Bound<PyAny>) -> Option<T>;
-    fn map_to_py(&self, native: T) -> Option<&PyObject>;
-}
-
-pub(crate) type BitType = u32;
+pub type BitType = u32;
 #[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct Qubit(BitType);
+pub struct Qubit(BitType);
 #[derive(Copy, Clone, Debug, Hash, Ord, PartialOrd, Eq, PartialEq)]
-struct Clbit(BitType);
+pub struct Clbit(BitType);
 
 pub struct TupleLikeArg<'py> {
     value: Bound<'py, PyTuple>,
@@ -103,5 +96,9 @@ pub fn circuit(m: Bound<PyModule>) -> PyResult<()> {
     m.add_class::<circuit_data::CircuitData>()?;
     m.add_class::<circuit_instruction::CircuitInstruction>()?;
     m.add_class::<dag_circuit::DAGCircuit>()?;
+    m.add_class::<dag_node::DAGNode>()?;
+    m.add_class::<dag_node::DAGInNode>()?;
+    m.add_class::<dag_node::DAGOutNode>()?;
+    m.add_class::<dag_node::DAGOpNode>()?;
     Ok(())
 }

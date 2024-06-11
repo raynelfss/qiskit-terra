@@ -116,27 +116,6 @@ impl<T: Eq + Hash> IndexedInterner<T> {
             index_lookup: HashMap::new(),
         }
     }
-
-    /// Consumes `value` and returns a [CacheSlot] that can be used
-    /// to obtain a reference to an equivalent value by
-    /// calling [SlottedCache.get].
-    pub fn insert(&mut self, value: T) -> Result<Index, CacheFullError> {
-        if let Some(slot_idx) = self.index_lookup.get(&value) {
-            return Ok(*slot_idx);
-        }
-
-        let args = Arc::new(value);
-        let slot: Index = Index(self.entries.len().try_into().map_err(|_| CacheFullError)?);
-        self.entries.push(args.clone());
-        self.index_lookup.insert_unique_unchecked(args, slot);
-        Ok(slot)
-    }
-
-    /// Returns a reference to the value held at the provided [CacheSlot],
-    /// which must be valid in this cache.
-    pub fn get(&self, slot: Index) -> &T {
-        self.entries.get(slot.0 as usize).unwrap()
-    }
 }
 
 impl<T: Eq + Hash> Default for IndexedInterner<T> {
