@@ -11,7 +11,8 @@
 // that they have been altered from the originals.
 
 use hashbrown::HashMap;
-use pyo3::{IntoPy, PyObject, Python};
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::{IntoPy, PyObject, PyResult, Python};
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -39,8 +40,6 @@ impl IntoPy<PyObject> for Index {
         self.0.into_py(py)
     }
 }
-
-pub struct CacheFullError;
 
 /// An append-only data structure for interning generic
 /// Rust types.
@@ -77,7 +76,7 @@ where
     T: Eq + Hash,
 {
     type Key = InternerKey<T>;
-    type Output = Result<InternerValue<'a, T>, CacheFullError>;
+    type Output = PyResult<InternerValue<'a, T>>;
 
     fn intern(self, key: Self::Key) -> Self::Output {
         match key {
@@ -96,8 +95,11 @@ where
                     })
                 } else {
                     let args = Arc::new(value);
-                    let index: Index =
-                        Index(self.entries.len().try_into().map_err(|_| CacheFullError)?);
+                    let index: Index = Index(self.entries.len().try_into().map_err(|_| {
+                        PyRuntimeError::new_err(
+                            "The interner has run out of indices (cache is full)!",
+                        )
+                    })?);
                     self.entries.push(args.clone());
                     Ok(InternerValue {
                         index,

@@ -10,11 +10,11 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
-use crate::bit_data::{BitData, BitNotFoundError};
+use crate::bit_data::BitData;
 use crate::circuit_instruction::CircuitInstruction;
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
-use crate::interner::{CacheFullError, Index, IndexedInterner, Interner, InternerKey};
+use crate::interner::{Index, IndexedInterner, Interner, InternerKey};
 use crate::packed_instruction::PackedInstruction;
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
 use hashbrown::hash_map::DefaultHashBuilder;
@@ -98,6 +98,11 @@ enum Wire {
     Clbit(Clbit),
 }
 
+/// Quantum circuit as a directed acyclic graph.
+///
+/// There are 3 types of nodes in the graph: inputs, outputs, and operations.
+/// The nodes are connected by directed edges that correspond to qubits and
+/// bits.
 #[pyclass(module = "qiskit._accelerate.circuit")]
 #[derive(Clone, Debug)]
 pub struct DAGCircuit {
@@ -148,21 +153,6 @@ pub struct DAGCircuit {
     // Python modules we need to frequently access (for now).
     control_flow_module: PyControlFlowModule,
     circuit_module: PyCircuitModule,
-}
-
-impl From<BitNotFoundError> for PyErr {
-    fn from(_: BitNotFoundError) -> Self {
-        DAGCircuitError::new_err("Bit not found in DAG.")
-    }
-}
-
-impl From<CacheFullError> for PyErr {
-    fn from(_: CacheFullError) -> Self {
-        DAGCircuitError::new_err(concat!(
-            "The (qu)bit argument list cache has exceeded its maximum",
-            "capacity."
-        ))
-    }
 }
 
 #[derive(Clone, Debug)]

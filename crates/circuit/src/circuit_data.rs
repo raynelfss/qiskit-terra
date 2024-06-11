@@ -10,14 +10,13 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
-use crate::bit_data::{BitData, BitNotFoundError};
+use crate::bit_data::BitData;
 use crate::circuit_instruction::CircuitInstruction;
-use crate::interner::{CacheFullError, IndexedInterner, Interner, InternerKey};
+use crate::interner::{IndexedInterner, Interner, InternerKey};
 use crate::packed_instruction::PackedInstruction;
 use crate::{Clbit, Qubit, SliceOrInt};
-use crate::{BitType, Clbit, PyNativeMapper, Qubit, SliceOrInt};
 
-use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PySet, PySlice, PyTuple, PyType};
 use pyo3::{PyObject, PyResult, PyTraverseError, PyVisit};
@@ -86,21 +85,6 @@ pub struct CircuitData {
     qubits: BitData<Qubit>,
     /// Clbits registered in the circuit.
     clbits: BitData<Clbit>,
-}
-
-impl<'py> From<BitNotFoundError<'py>> for PyErr {
-    fn from(error: BitNotFoundError) -> Self {
-        PyKeyError::new_err(format!(
-            "Bit {:?} has not been added to this circuit.",
-            error.0
-        ))
-    }
-}
-
-impl From<CacheFullError> for PyErr {
-    fn from(_: CacheFullError) -> Self {
-        PyRuntimeError::new_err("The bit operands cache is full!")
-    }
 }
 
 #[pymethods]
@@ -221,7 +205,8 @@ impl CircuitData {
     ///         was provided.
     #[pyo3(signature = (bit, *, strict=true))]
     pub fn add_qubit(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<()> {
-        self.qubits.add(py, bit, strict)
+        self.qubits.add(py, bit, strict)?;
+        Ok(())
     }
 
     /// Registers a :class:`.Clbit` instance.
@@ -235,7 +220,8 @@ impl CircuitData {
     ///         was provided.
     #[pyo3(signature = (bit, *, strict=true))]
     pub fn add_clbit(&mut self, py: Python, bit: &Bound<PyAny>, strict: bool) -> PyResult<()> {
-        self.clbits.add(py, bit, strict)
+        self.clbits.add(py, bit, strict)?;
+        Ok(())
     }
 
     /// Performs a shallow copy.
@@ -275,11 +261,11 @@ impl CircuitData {
         let qubits = PySet::empty_bound(py)?;
         let clbits = PySet::empty_bound(py)?;
         for inst in self.data.iter() {
-            for b in self.intern_context.lookup(inst.qubits_id).iter() {
-                qubits.add(self.qubits_native[*b as usize].clone_ref(py))?;
+            for b in self.qargs_interner.intern(inst.qubits_id).value.iter() {
+                qubits.add(self.qubits.get(*b).unwrap().clone_ref(py))?;
             }
-            for b in self.intern_context.lookup(inst.clbits_id).iter() {
-                clbits.add(self.clbits_native[*b as usize].clone_ref(py))?;
+            for b in self.cargs_interner.intern(inst.clbits_id).value.iter() {
+                clbits.add(self.clbits.get(*b).unwrap().clone_ref(py))?;
             }
         }
 
@@ -425,7 +411,17 @@ impl CircuitData {
         ) -> PyResult<Py<CircuitInstruction>> {
             let index = self_.convert_py_index(index)?;
             if let Some(inst) = self_.data.get(index) {
-                Py::new(py, self_.unpack(py, inst)?)
+                let qubits = self_.qargs_interner.intern(inst.qubits_id);
+                let clbits = self_.cargs_interner.intern(inst.clbits_id);
+                Py::new(
+                    py,
+                    CircuitInstruction::new(
+                        py,
+                        inst.op.clone_ref(py),
+                        self_.qubits.map_indices(qubits.value),
+                        self_.clbits.map_indices(clbits.value),
+                    ),
+                )
             } else {
                 Err(PyIndexError::new_err(format!(
                     "No element at index {:?} in circuit data",
@@ -572,7 +568,7 @@ impl CircuitData {
                     .map(|b| {
                         Ok(self
                             .qubits
-                            .find(other.qubits.get(Qubit(*b)).unwrap().bind(py))
+                            .find(other.qubits.get(*b).unwrap().bind(py))
                             .unwrap())
                     })
                     .collect::<PyResult<Vec<Qubit>>>()?;
@@ -584,7 +580,7 @@ impl CircuitData {
                     .map(|b| {
                         Ok(self
                             .clbits
-                            .find(other.clbits.get(Clbit(*b)).unwrap().bind(py))
+                            .find(other.clbits.get(*b).unwrap().bind(py))
                             .unwrap())
                     })
                     .collect::<PyResult<Vec<Clbit>>>()?;
@@ -720,7 +716,7 @@ impl CircuitData {
         }
         Ok(index as usize)
     }
-}
+
     fn pack(
         &mut self,
         py: Python,

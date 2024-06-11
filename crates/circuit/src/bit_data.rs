@@ -12,11 +12,10 @@
 
 use crate::BitType;
 use hashbrown::HashMap;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
 
 /// Private wrapper for Python-side Bit instances that implements
@@ -82,8 +81,6 @@ pub(crate) struct BitData<T> {
     cached: Py<PyList>,
 }
 
-pub(crate) struct BitNotFoundError<'py>(pub(crate) Bound<'py, PyAny>);
-
 impl<T> BitData<T>
 where
     T: From<BitType> + Copy,
@@ -127,14 +124,16 @@ where
     pub fn map_bits<'py>(
         &self,
         bits: impl IntoIterator<Item = Bound<'py, PyAny>>,
-    ) -> Result<impl Iterator<Item = T>, BitNotFoundError<'py>> {
+    ) -> PyResult<impl Iterator<Item = T>> {
         let v: Result<Vec<_>, _> = bits
             .into_iter()
             .map(|b| {
                 self.indices
                     .get(&BitAsKey::new(&b))
                     .copied()
-                    .ok_or_else(|| BitNotFoundError(b))
+                    .ok_or_else(|| {
+                        PyKeyError::new_err(format!("Bit {:?} not found in circuit.", b))
+                    })
             })
             .collect();
         v.map(|x| x.into_iter())
