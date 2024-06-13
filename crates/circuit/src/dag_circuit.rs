@@ -22,6 +22,7 @@ use hashbrown::{hash_map, HashMap, HashSet};
 use indexmap::set::Slice;
 use indexmap::{IndexMap, IndexSet};
 use petgraph::prelude::*;
+use pyo3::callback::IntoPyCallbackOutput;
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::iter::BoundTupleIterator;
@@ -110,7 +111,7 @@ pub struct DAGCircuit {
     name: Option<Py<PyString>>,
     #[pyo3(get)]
     metadata: Option<Py<PyDict>>,
-    calibrations: Py<PyDict>,
+    calibrations: HashMap<String, Py<PyDict>>,
 
     dag: StableDiGraph<NodeType, Wire>,
 
@@ -214,6 +215,7 @@ struct PyCircuitModule {
     operation: Py<PyType>,
     store: Py<PyType>,
     gate: Py<PyType>,
+    parameter_expression: Py<PyType>,
 }
 
 impl PyCircuitModule {
@@ -247,6 +249,10 @@ impl PyCircuitModule {
             operation: module.getattr("Operation")?.downcast_into_exact()?.unbind(),
             store: module.getattr("Store")?.downcast_into_exact()?.unbind(),
             gate: module.getattr("Gate")?.downcast_into_exact()?.unbind(),
+            parameter_expression: module
+                .getattr("ParameterExpression")?
+                .downcast_into_exact()?
+                .unbind(),
         })
     }
 }
@@ -266,7 +272,7 @@ impl DAGCircuit {
         Ok(DAGCircuit {
             name: None,
             metadata: None,
-            calibrations: PyDict::new_bound(py).unbind(),
+            calibrations: HashMap::new(),
             dag: StableDiGraph::default(),
             qregs: PyDict::new_bound(py).unbind(),
             cregs: PyDict::new_bound(py).unbind(),
@@ -343,8 +349,8 @@ impl DAGCircuit {
     /// The custom pulse definition of a given gate is of the form
     ///    {'gate_name': {(qubits, params): schedule}}
     #[getter]
-    fn get_calibrations(&self) -> PyObject {
-        todo!()
+    fn get_calibrations(&self, py: Python) -> HashMap<String, Py<PyDict>> {
+        self.calibrations.clone()
     }
 
     /// Set the circuit calibration data from a dictionary of calibration definition.
@@ -353,8 +359,8 @@ impl DAGCircuit {
     ///      calibrations (dict): A dictionary of input in the format
     ///          {'gate_name': {(qubits, gate_params): schedule}}
     #[setter]
-    fn set_calibrations(&self, calibrations: &Bound<PyDict>) {
-        todo!()
+    fn set_calibrations(&mut self, calibrations: HashMap<String, Py<PyDict>>) {
+        self.calibrations = calibrations;
     }
 
     /// Register a low-level, custom pulse definition for the given gate.
@@ -367,57 +373,101 @@ impl DAGCircuit {
     ///
     /// Raises:
     ///     Exception: if the gate is of type string and params is None.
-    fn add_calibration(
+    fn add_calibration<'py>(
         &mut self,
-        gate: &Bound<PyAny>,
-        qubits: &Bound<PyAny>,
-        schedule: &Bound<PyAny>,
-        params: Option<Bound<PyList>>,
+        py: Python<'py>,
+        mut gate: Bound<'py, PyAny>,
+        mut qubits: Bound<'py, PyAny>,
+        schedule: Py<PyAny>,
+        mut params: Option<Bound<'py, PyAny>>,
     ) -> PyResult<()> {
-        //        def _format(operand):
-        //            try:
-        //                # Using float/complex value as a dict key is not good idea.
-        //                # This makes the mapping quite sensitive to the rounding error.
-        //                # However, the mechanism is already tied to the execution model (i.e. pulse gate)
-        //                # and we cannot easily update this rule.
-        //                # The same logic exists in QuantumCircuit.add_calibration.
-        //                evaluated = complex(operand)
-        //                if np.isreal(evaluated):
-        //                    evaluated = float(evaluated.real)
-        //                    if evaluated.is_integer():
-        //                        evaluated = int(evaluated)
-        //                return evaluated
-        //            except TypeError:
-        //                # Unassigned parameter
-        //                return operand
-        //
-        //        if isinstance(gate, Gate):
-        //            params = gate.params
-        //            gate = gate.name
-        //        if params is not None:
-        //            params = tuple(map(_format, params))
-        //        else:
-        //            params = ()
-        //
-        //        self._calibrations[gate][(tuple(qubits), params)] = schedule
-        todo!()
+        if gate.is_instance(self.circuit_module.gate.bind(py))? {
+            params = Some(gate.getattr(intern!(py, "params"))?);
+            gate = gate.getattr(intern!(py, "name"))?;
+        }
+
+        if let Some(operands) = params {
+            let add_calibration = PyModule::from_code_bound(
+                py,
+                r#"
+def _format(operand):
+    try:
+        # Using float/complex value as a dict key is not good idea.
+        # This makes the mapping quite sensitive to the rounding error.
+        # However, the mechanism is already tied to the execution model (i.e. pulse gate)
+        # and we cannot easily update this rule.
+        # The same logic exists in QuantumCircuit.add_calibration.
+        evaluated = complex(operand)
+        if np.isreal(evaluated):
+            evaluated = float(evaluated.real)
+            if evaluated.is_integer():
+                evaluated = int(evaluated)
+        return evaluated
+    except TypeError:
+        # Unassigned parameter
+        return operand
+    "#,
+                "add_calibration.py",
+                "add_calibration",
+            )?;
+
+            let format = add_calibration.getattr("_format")?;
+            let mapped: PyResult<Vec<_>> = operands.iter()?.map(|p| format.call1((p?,))).collect();
+            params = Some(PyTuple::new_bound(py, mapped).into_any());
+        } else {
+            params = Some(PyTuple::empty_bound(py).into_any());
+        }
+
+        let calibrations = self
+            .calibrations
+            .entry(gate.extract()?)
+            .or_insert_with(|| PyDict::new_bound(py).unbind())
+            .bind(py);
+
+        if !qubits.is_instance_of::<PyTuple>() {
+            qubits = PyTuple::new_bound(py, [qubits]).into_any();
+        }
+
+        calibrations.set_item((qubits, params.unwrap()).to_object(py), schedule)?;
+        Ok(())
     }
 
     /// Return True if the dag has a calibration defined for the node operation. In this
     /// case, the operation does not need to be translated to the device basis.
-    fn has_calibration_for(&self, node: &Bound<PyAny>) -> PyResult<bool> {
-        //        if not self.calibrations or node.op.name not in self.calibrations:
-        //            return False
-        //        qubits = tuple(self.qubits.index(qubit) for qubit in node.qargs)
-        //        params = []
-        //        for p in node.op.params:
-        //            if isinstance(p, ParameterExpression) and not p.parameters:
-        //                params.append(float(p))
-        //            else:
-        //                params.append(p)
-        //        params = tuple(params)
-        //        return (qubits, params) in self.calibrations[node.op.name]
-        todo!()
+    fn has_calibration_for(&self, py: Python, node: PyRef<DAGOpNode>) -> PyResult<bool> {
+        let node = NodeIndex::new(node.as_ref()._node_id as usize);
+        if let Some(NodeType::Operation(packed)) = self.dag.node_weight(node) {
+            let op_name: String = packed.op.bind(py).getattr(intern!(py, "name"))?.extract()?;
+            if !self.calibrations.contains_key(&op_name) {
+                return Ok(false);
+            }
+            let mut params = Vec::new();
+            for p in packed.op.bind(py).getattr(intern!(py, "params"))?.iter()? {
+                let p = p?;
+                if p.is_instance(self.circuit_module.parameter_expression.bind(py))?
+                    && !p.getattr(intern!(py, "parameters"))?.is_truthy()?
+                {
+                    // params.push(PyFloat::new_bound(py, p));
+                    todo!()
+                } else {
+                    params.push(p);
+                }
+            }
+            let qubits: Vec<BitType> = self
+                .qargs_cache
+                .intern(packed.qubits_id)
+                .value
+                .into_iter()
+                .cloned()
+                .map(|b| b.into())
+                .collect();
+            let params = PyTuple::new_bound(py, params);
+            self.calibrations[&op_name]
+                .bind(py)
+                .contains((qubits, params).to_object(py))
+        } else {
+            Ok(false)
+        }
     }
 
     /// Remove all operation nodes with the given name.

@@ -12,8 +12,11 @@ doctest = false
 [dependencies]
 ahash = "0.8.11"
 hashbrown.workspace = true
-pyo3.workspace = true
 rustworkx-core = "0.14.2"
+
+[dependencies.pyo3]
+workspace = true
+features = ["hashbrown", "indexmap", "num-complex", "num-bigint", "smallvec"]
 
 [dependencies.indexmap]
 workspace = true
