@@ -62,9 +62,7 @@ where
         } else {
             let args = Arc::new(key);
             let index: Index = Index(self.entries.len().try_into().map_err(|_| {
-                PyRuntimeError::new_err(
-                    "The interner has run out of indices (cache is full)!",
-                )
+                PyRuntimeError::new_err("The interner has run out of indices (cache is full)!")
             })?);
             self.entries.push(args.clone());
             self.index_lookup.insert_unique_unchecked(args, index);

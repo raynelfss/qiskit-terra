@@ -583,10 +583,8 @@ impl CircuitData {
                     })
                     .collect::<PyResult<Vec<Clbit>>>()?;
 
-                let qubits_id =
-                    Interner::intern(&mut self.qargs_interner, qubits)?;
-                let clbits_id =
-                    Interner::intern(&mut self.cargs_interner, clbits)?;
+                let qubits_id = Interner::intern(&mut self.qargs_interner, qubits)?;
+                let clbits_id = Interner::intern(&mut self.cargs_interner, clbits)?;
                 self.data.push(PackedInstruction {
                     op: inst.op.clone_ref(py),
                     qubits_id,

@@ -31,6 +31,8 @@ use pyo3::types::{
     PyTuple, PyType,
 };
 use pyo3::{intern, PyObject, PyResult, PyVisit};
+use rustworkx_core::err::ContractError;
+use rustworkx_core::graph_ext::ContractNodesDirected;
 use rustworkx_core::petgraph;
 use rustworkx_core::petgraph::prelude::StableDiGraph;
 use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, NodeIndex};
@@ -39,8 +41,6 @@ use rustworkx_core::petgraph::Incoming;
 use std::f64::consts::PI;
 use std::ffi::c_double;
 use std::hash::{Hash, Hasher};
-use rustworkx_core::err::ContractError;
-use rustworkx_core::graph_ext::ContractNodesDirected;
 
 trait IntoUnique {
     type Output;
@@ -1054,7 +1054,9 @@ def _format(operand):
 
             // Put the new node in-between the previously "last" nodes on each wire
             // and the output map.
-            let output_nodes: Vec<NodeIndex> = self.qargs_cache.intern(qubits_id)
+            let output_nodes: Vec<NodeIndex> = self
+                .qargs_cache
+                .intern(qubits_id)
                 .iter()
                 .map(|q| self.qubit_output_map.get(q).copied().unwrap())
                 .chain(
@@ -1173,7 +1175,9 @@ def _format(operand):
 
             // Put the new node in-between the input map and the previously
             // "first" nodes on each wire.
-            let input_nodes: Vec<NodeIndex> = self.qargs_cache.intern(qubits_id)
+            let input_nodes: Vec<NodeIndex> = self
+                .qargs_cache
+                .intern(qubits_id)
                 .iter()
                 .map(|q| self.qubit_input_map.get(q).copied().unwrap())
                 .chain(
@@ -1725,7 +1729,9 @@ def _format(operand):
             } else if bit.is_instance(self.circuit_module.clbit.bind(py))? {
                 clbit_pos_map.insert(self.clbits.find(&bit).unwrap(), index.extract()?);
             } else {
-                return Err(DAGCircuitError::new_err("Wire map keys must be Qubit or Clbit instances."));
+                return Err(DAGCircuitError::new_err(
+                    "Wire map keys must be Qubit or Clbit instances.",
+                ));
             }
         }
 
@@ -1793,10 +1799,16 @@ def _format(operand):
             }
         }
 
-        let mut block_qargs: Vec<Qubit> = block_qargs.into_iter().filter(|q| qubit_pos_map.contains_key(q)).collect();
+        let mut block_qargs: Vec<Qubit> = block_qargs
+            .into_iter()
+            .filter(|q| qubit_pos_map.contains_key(q))
+            .collect();
         block_qargs.sort_by_key(|q| qubit_pos_map[q]);
 
-        let mut block_cargs: Vec<Clbit> = block_cargs.into_iter().filter(|c| clbit_pos_map.contains_key(c)).collect();
+        let mut block_cargs: Vec<Clbit> = block_cargs
+            .into_iter()
+            .filter(|c| clbit_pos_map.contains_key(c))
+            .collect();
         block_cargs.sort_by_key(|c| clbit_pos_map[c]);
 
         let qubits_id = Interner::intern(&mut self.qargs_cache, block_qargs)?;
@@ -1807,13 +1819,20 @@ def _format(operand):
             clbits_id,
         });
 
-        let new_node = self.dag.contract_nodes(block_ids, weight, cycle_check).map_err(|e| match e {
-            ContractError::DAGWouldCycle => {
-                DAGCircuitError::new_err("Replacing the specified node block would introduce a cycle")
-            }
-        })?;
+        let new_node = self
+            .dag
+            .contract_nodes(block_ids, weight, cycle_check)
+            .map_err(|e| match e {
+                ContractError::DAGWouldCycle => DAGCircuitError::new_err(
+                    "Replacing the specified node block would introduce a cycle",
+                ),
+            })?;
 
-        self.increment_op(op.getattr(intern!(py, "name"))?.downcast_into_exact::<PyString>()?.to_string());
+        self.increment_op(
+            op.getattr(intern!(py, "name"))?
+                .downcast_into_exact::<PyString>()?
+                .to_string(),
+        );
         for name in block_op_names {
             self.decrement_op(name.downcast_into_exact::<PyString>()?.to_string());
         }
