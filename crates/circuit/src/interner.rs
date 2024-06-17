@@ -19,11 +19,6 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug)]
 pub struct Index(u32);
 
-pub struct InternerValue<'a, T> {
-    pub index: Index,
-    pub value: &'a T,
-}
-
 impl IntoPy<PyObject> for Index {
     fn into_py(self, py: Python<'_>) -> PyObject {
         self.0.into_py(py)
@@ -52,10 +47,6 @@ impl<'a, T> Interner<Index> for &'a IndexedInterner<T> {
     fn intern(self, index: Index) -> Self::Output {
         let value = self.entries.get(index.0 as usize).unwrap();
         value.as_ref()
-        // InternerValue {
-        //     index,
-        //     value: value.as_ref(),
-        // }
     }
 }
 
@@ -68,10 +59,6 @@ where
     fn intern(self, key: T) -> Self::Output {
         if let Some(index) = self.index_lookup.get(&key).copied() {
             Ok(index)
-            // Ok(InternerValue {
-            //     index,
-            //     value: self.entries.get(index.0 as usize).unwrap(),
-            // })
         } else {
             let args = Arc::new(key);
             let index: Index = Index(self.entries.len().try_into().map_err(|_| {
@@ -82,10 +69,6 @@ where
             self.entries.push(args.clone());
             self.index_lookup.insert_unique_unchecked(args, index);
             Ok(index)
-            // Ok(InternerValue {
-            //     index,
-            //     value: self.index_lookup.insert_unique_unchecked(args, index).0,
-            // })
         }
     }
 }

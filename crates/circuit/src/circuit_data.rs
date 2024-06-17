@@ -261,10 +261,10 @@ impl CircuitData {
         let qubits = PySet::empty_bound(py)?;
         let clbits = PySet::empty_bound(py)?;
         for inst in self.data.iter() {
-            for b in self.qargs_interner.intern(inst.qubits_id).value.iter() {
+            for b in self.qargs_interner.intern(inst.qubits_id) {
                 qubits.add(self.qubits.get(*b).unwrap().clone_ref(py))?;
             }
-            for b in self.cargs_interner.intern(inst.clbits_id).value.iter() {
+            for b in self.cargs_interner.intern(inst.clbits_id) {
                 clbits.add(self.clbits.get(*b).unwrap().clone_ref(py))?;
             }
         }
@@ -418,8 +418,8 @@ impl CircuitData {
                     CircuitInstruction::new(
                         py,
                         inst.op.clone_ref(py),
-                        self_.qubits.map_indices(qubits.value),
-                        self_.clbits.map_indices(clbits.value),
+                        self_.qubits.map_indices(qubits),
+                        self_.clbits.map_indices(clbits),
                     ),
                 )
             } else {
@@ -563,7 +563,6 @@ impl CircuitData {
                 let qubits = other
                     .qargs_interner
                     .intern(inst.qubits_id)
-                    .value
                     .iter()
                     .map(|b| {
                         Ok(self
@@ -575,7 +574,6 @@ impl CircuitData {
                 let clbits = other
                     .cargs_interner
                     .intern(inst.clbits_id)
-                    .value
                     .iter()
                     .map(|b| {
                         Ok(self
@@ -585,14 +583,14 @@ impl CircuitData {
                     })
                     .collect::<PyResult<Vec<Clbit>>>()?;
 
-                let qubits =
+                let qubits_id =
                     Interner::intern(&mut self.qargs_interner, qubits)?;
-                let clbits =
+                let clbits_id =
                     Interner::intern(&mut self.cargs_interner, clbits)?;
                 self.data.push(PackedInstruction {
                     op: inst.op.clone_ref(py),
-                    qubits_id: qubits.index,
-                    clbits_id: clbits.index,
+                    qubits_id,
+                    clbits_id,
                 });
             }
             return Ok(());
@@ -722,18 +720,18 @@ impl CircuitData {
         py: Python,
         value: PyRef<CircuitInstruction>,
     ) -> PyResult<PackedInstruction> {
-        let qubits = Interner::intern(
+        let qubits_id = Interner::intern(
             &mut self.qargs_interner,
             self.qubits.map_bits(value.qubits.bind(py))?.collect(),
         )?;
-        let clbits = Interner::intern(
+        let clbits_id = Interner::intern(
             &mut self.cargs_interner,
             self.clbits.map_bits(value.clbits.bind(py))?.collect(),
         )?;
         Ok(PackedInstruction {
             op: value.operation.clone_ref(py),
-            qubits_id: qubits.index,
-            clbits_id: clbits.index,
+            qubits_id,
+            clbits_id,
         })
     }
 }
