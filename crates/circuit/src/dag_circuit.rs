@@ -14,7 +14,7 @@ use crate::bit_data::BitData;
 use crate::circuit_instruction::CircuitInstruction;
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
-use crate::interner::{Index, IndexedInterner, Interner, InternerKey};
+use crate::interner::{Index, IndexedInterner, Interner};
 use crate::packed_instruction::PackedInstruction;
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
 use hashbrown::hash_map::DefaultHashBuilder;
@@ -27,8 +27,8 @@ use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::iter::BoundTupleIterator;
 use pyo3::types::{
-    PyDict, PyFloat, PyInt, PyIterator, PyList, PySequence, PySet, PySlice, PyString, PyTuple,
-    PyType,
+    PyDict, PyFloat, PyFrozenSet, PyInt, PyIterator, PyList, PySequence, PySet, PySlice, PyString,
+    PyTuple, PyType,
 };
 use pyo3::{intern, PyObject, PyResult, PyVisit};
 use rustworkx_core::petgraph;
@@ -39,6 +39,8 @@ use rustworkx_core::petgraph::Incoming;
 use std::f64::consts::PI;
 use std::ffi::c_double;
 use std::hash::{Hash, Hasher};
+use rustworkx_core::err::ContractError;
+use rustworkx_core::graph_ext::ContractNodesDirected;
 
 trait IntoUnique {
     type Output;
@@ -164,6 +166,7 @@ pub struct DAGCircuit {
 struct PyControlFlowModule {
     condition_resources: Py<PyAny>,
     node_resources: Py<PyAny>,
+    control_flow_op_names: Py<PyFrozenSet>,
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +181,10 @@ impl PyControlFlowModule {
         Ok(PyControlFlowModule {
             condition_resources: module.getattr("condition_resources")?.unbind(),
             node_resources: module.getattr("node_resources")?.unbind(),
+            control_flow_op_names: module
+                .getattr("CONTROL_FLOW_OP_NAMES")?
+                .downcast_into_exact()?
+                .unbind(),
         })
     }
 
@@ -457,7 +464,7 @@ def _format(operand):
                 .qargs_cache
                 .intern(packed.qubits_id)
                 .value
-                .into_iter()
+                .iter()
                 .cloned()
                 .map(|b| b.into())
                 .collect();
@@ -933,30 +940,6 @@ def _format(operand):
         Ok(())
     }
 
-    fn _increment_op(&mut self, op: String) {
-        match self.op_names.entry(op) {
-            hash_map::Entry::Occupied(mut o) => {
-                *o.get_mut() += 1;
-            }
-            hash_map::Entry::Vacant(v) => {
-                v.insert(1);
-            }
-        }
-    }
-
-    fn _decrement_op(&mut self, op: String) {
-        match self.op_names.entry(op) {
-            hash_map::Entry::Occupied(mut o) => {
-                if *o.get() > 0usize {
-                    *o.get_mut() -= 1;
-                } else {
-                    o.remove();
-                }
-            }
-            _ => panic!("Cannot decrement something not added!"),
-        }
-    }
-
     /// Return a copy of self with the same structure but empty.
     ///
     /// That structure includes:
@@ -1060,10 +1043,10 @@ def _format(operand):
                 }
             }
 
-            self._increment_op(op_name.downcast_into_exact::<PyString>()?.to_string());
+            self.increment_op(op_name.downcast_into_exact::<PyString>()?.to_string());
 
-            let qubits = Interner::intern(&mut self.qargs_cache, InternerKey::Value(qargs))?;
-            let clbits = Interner::intern(&mut self.cargs_cache, InternerKey::Value(cargs))?;
+            let qubits = Interner::intern(&mut self.qargs_cache, qargs)?;
+            let clbits = Interner::intern(&mut self.cargs_cache, cargs)?;
             let new_node = self.dag.add_node(NodeType::Operation(PackedInstruction {
                 op: op.clone().unbind(),
                 qubits_id: qubits.index,
@@ -1180,10 +1163,10 @@ def _format(operand):
                 }
             }
 
-            self._increment_op(op_name.downcast_into_exact::<PyString>()?.to_string());
+            self.increment_op(op_name.downcast_into_exact::<PyString>()?.to_string());
 
-            let qubits = Interner::intern(&mut self.qargs_cache, InternerKey::Value(qargs))?;
-            let clbits = Interner::intern(&mut self.cargs_cache, InternerKey::Value(cargs))?;
+            let qubits = Interner::intern(&mut self.qargs_cache, qargs)?;
+            let clbits = Interner::intern(&mut self.cargs_cache, cargs)?;
             let new_node = self.dag.add_node(NodeType::Operation(PackedInstruction {
                 op: op.clone().unbind(),
                 qubits_id: qubits.index,
@@ -1470,7 +1453,30 @@ def _format(operand):
     ///     DAGCircuitError: if an unknown :class:`.ControlFlowOp` is present in a call with
     ///         ``recurse=True``, or any control flow is present in a non-recursive call.
     #[pyo3(signature= (*, recurse=false))]
-    fn size(&self, recurse: bool) -> PyResult<usize> {
+    fn size(&self, py: Python, recurse: bool) -> PyResult<usize> {
+        let length = self.dag.node_count() - self.width() * 2;
+        if !recurse {
+            // TODO: do this once in module struct `new`.
+            let control_flow_op_names: PyResult<Vec<String>> = self
+                .control_flow_module
+                .control_flow_op_names
+                .bind(py)
+                .iter()
+                .map(|s| s.extract())
+                .collect();
+            if control_flow_op_names?
+                .into_iter()
+                .any(|n| self.op_names.contains_key(&n))
+            {
+                return Err(DAGCircuitError::new_err(concat!(
+                    "Size with control flow is ambiguous.",
+                    " You may use `recurse=True` to get a result",
+                    " but see this method's documentation for the meaning of this."
+                )));
+            }
+            return Ok(length);
+        }
+
         // length = len(self._multi_graph) - 2 * len(self._wires)
         // if not recurse:
         //     if any(x in self._op_names for x in CONTROL_FLOW_OP_NAMES):
@@ -1578,6 +1584,7 @@ def _format(operand):
 
     /// Compute how many components the circuit can decompose into.
     fn num_tensor_factors(&self) -> usize {
+        // return rx.number_weakly_connected_components(self._multi_graph)
         todo!()
     }
 
@@ -1700,54 +1707,128 @@ def _format(operand):
     #[pyo3(signature = (node_block, op, wire_pos_map, cycle_check=true))]
     fn replace_block_with_op(
         &mut self,
-        node_block: &Bound<PyList>,
-        op: &Bound<PyAny>,
+        py: Python,
+        node_block: Vec<PyRef<DAGNode>>,
+        op: Bound<PyAny>,
         wire_pos_map: &Bound<PyDict>,
         cycle_check: bool,
-    ) -> Py<PyAny> {
-        // block_qargs = set()
-        // block_cargs = set()
-        // block_ids = [x._node_id for x in node_block]
-        //
-        // # If node block is empty return early
-        // if not node_block:
-        //     raise DAGCircuitError("Can't replace an empty node_block")
-        //
-        // for nd in node_block:
-        //     block_qargs |= set(nd.qargs)
-        //     block_cargs |= set(nd.cargs)
-        //     if (condition := getattr(nd.op, "condition", None)) is not None:
-        //         block_cargs.update(condition_resources(condition).clbits)
-        //     elif isinstance(nd.op, SwitchCaseOp):
-        //         if isinstance(nd.op.target, Clbit):
-        //             block_cargs.add(nd.op.target)
-        //         elif isinstance(nd.op.target, ClassicalRegister):
-        //             block_cargs.update(nd.op.target)
-        //         else:
-        //             block_cargs.update(node_resources(nd.op.target).clbits)
-        //
-        // block_qargs = [bit for bit in block_qargs if bit in wire_pos_map]
-        // block_qargs.sort(key=wire_pos_map.get)
-        // block_cargs = [bit for bit in block_cargs if bit in wire_pos_map]
-        // block_cargs.sort(key=wire_pos_map.get)
-        // new_node = DAGOpNode(op, block_qargs, block_cargs, dag=self)
-        //
-        // try:
-        //     new_node._node_id = self._multi_graph.contract_nodes(
-        //         block_ids, new_node, check_cycle=cycle_check
-        //     )
-        // except rx.DAGWouldCycle as ex:
-        //     raise DAGCircuitError(
-        //         "Replacing the specified node block would introduce a cycle"
-        //     ) from ex
-        //
-        // self._increment_op(op)
-        //
-        // for nd in node_block:
-        //     self._decrement_op(nd.op)
-        //
-        // return new_node
-        todo!()
+    ) -> PyResult<Py<DAGOpNode>> {
+        // If node block is empty return early
+        if node_block.is_empty() {
+            return Err(DAGCircuitError::new_err(
+                "Can't replace an empty 'node_block'",
+            ));
+        }
+
+        let mut qubit_pos_map: HashMap<Qubit, usize> = HashMap::new();
+        let mut clbit_pos_map: HashMap<Clbit, usize> = HashMap::new();
+        for (bit, index) in wire_pos_map.iter() {
+            if bit.is_instance(self.circuit_module.qubit.bind(py))? {
+                qubit_pos_map.insert(self.qubits.find(&bit).unwrap(), index.extract()?);
+            } else if bit.is_instance(self.circuit_module.clbit.bind(py))? {
+                clbit_pos_map.insert(self.clbits.find(&bit).unwrap(), index.extract()?);
+            } else {
+                return Err(DAGCircuitError::new_err("Wire map keys must be Qubit or Clbit instances."));
+            }
+        }
+
+        let block_ids: Vec<_> = node_block
+            .iter()
+            .map(|n| NodeIndex::new(n._node_id as usize))
+            .collect();
+
+        let mut block_op_names = Vec::new();
+        let mut block_qargs: IndexSet<Qubit> = IndexSet::new();
+        let mut block_cargs: IndexSet<Clbit> = IndexSet::new();
+        for nd in &block_ids {
+            let weight = self.dag.node_weight(*nd);
+            match weight {
+                Some(NodeType::Operation(packed)) => {
+                    let op = packed.op.bind(py);
+                    block_op_names.push(op.getattr(intern!(py, "name"))?);
+                    block_qargs.extend(self.qargs_cache.intern(packed.qubits_id).value);
+                    block_cargs.extend(self.cargs_cache.intern(packed.clbits_id).value);
+
+                    if let Some(condition) = op.getattr(intern!(py, "condition")).ok() {
+                        block_cargs.extend(
+                            self.clbits.map_bits(
+                                self.control_flow_module
+                                    .condition_resources(&condition)?
+                                    .clbits
+                                    .bind(py),
+                            )?,
+                        );
+                        continue;
+                    }
+                    if op.is_instance(self.circuit_module.switch_case_op.bind(py))? {
+                        let target = op.getattr(intern!(py, "target"))?;
+                        if target.is_instance(self.circuit_module.clbit.bind(py))? {
+                            block_cargs.insert(self.clbits.find(&target).unwrap());
+                        } else if target
+                            .is_instance(self.circuit_module.classical_register.bind(py))?
+                        {
+                            block_cargs.extend(
+                                self.clbits
+                                    .map_bits(target.extract::<Vec<Bound<PyAny>>>()?)?,
+                            );
+                        } else {
+                            block_cargs.extend(
+                                self.clbits.map_bits(
+                                    self.control_flow_module
+                                        .node_resources(&target)?
+                                        .clbits
+                                        .bind(py),
+                                )?,
+                            );
+                        }
+                    }
+                }
+                Some(_) => {
+                    return Err(DAGCircuitError::new_err(
+                        "Nodes in 'node_block' must be of type 'DAGOpNode'.",
+                    ))
+                }
+                None => {
+                    return Err(DAGCircuitError::new_err(
+                        "Node in 'node_block' not found in DAG.",
+                    ))
+                }
+            }
+        }
+
+        let mut block_qargs: Vec<Qubit> = block_qargs.into_iter().filter(|q| qubit_pos_map.contains_key(q)).collect();
+        block_qargs.sort_by_key(|q| qubit_pos_map[q]);
+
+        let mut block_cargs: Vec<Clbit> = block_cargs.into_iter().filter(|c| clbit_pos_map.contains_key(c)).collect();
+        block_cargs.sort_by_key(|c| clbit_pos_map[c]);
+
+        let qubits = Interner::intern(&mut self.qargs_cache, block_qargs)?;
+        let clbits = Interner::intern(&mut self.cargs_cache, block_cargs)?;
+        let weight = NodeType::Operation(PackedInstruction {
+            op: op.clone().unbind(),
+            qubits_id: qubits.index,
+            clbits_id: clbits.index,
+        });
+
+        let new_node = self.dag.contract_nodes(block_ids, weight, cycle_check).map_err(|e| match e {
+            ContractError::DAGWouldCycle => {
+                DAGCircuitError::new_err("Replacing the specified node block would introduce a cycle")
+            }
+        })?;
+
+        self.increment_op(op.getattr(intern!(py, "name"))?.downcast_into_exact::<PyString>()?.to_string());
+        for name in block_op_names {
+            self.decrement_op(name.downcast_into_exact::<PyString>()?.to_string());
+        }
+
+        DAGOpNode::new(
+            py,
+            new_node.index().try_into().unwrap(),
+            op.unbind(),
+            Some(PyTuple::new_bound(py, self.qubits.map_indices(qubits.value.as_slice())).unbind()),
+            Some(PyTuple::new_bound(py, self.clbits.map_indices(clbits.value.as_slice())).unbind()),
+            (qubits.index, clbits.index).into_py(py),
+        )
     }
 
     /// Replace one node with dag.
@@ -2839,18 +2920,17 @@ def _format(operand):
     }
 
     /// Return a dictionary of circuit properties.
-    fn properties(&self) -> PyResult<Py<PyAny>> {
-        // summary = {
-        //     "size": self.size(),
-        //     "depth": self.depth(),
-        //     "width": self.width(),
-        //     "qubits": self.num_qubits(),
-        //     "bits": self.num_clbits(),
-        //     "factors": self.num_tensor_factors(),
-        //     "operations": self.count_ops(),
-        // }
-        // return summary
-        todo!()
+    fn properties(&self, py: Python) -> PyResult<HashMap<&str, usize>> {
+        let mut summary = HashMap::from_iter([
+            ("size", self.size(py, false)?),
+            ("depth", self.depth(false)?),
+            ("width", self.width()),
+            ("qubits", self.num_qubits()),
+            ("bits", self.num_clbits()),
+            ("factors", self.num_tensor_factors()),
+            ("operations", self.count_ops(true)?),
+        ]);
+        Ok(summary)
     }
 
     /// Draws the dag circuit.
@@ -2882,6 +2962,30 @@ def _format(operand):
 }
 
 impl DAGCircuit {
+    fn increment_op(&mut self, op: String) {
+        match self.op_names.entry(op) {
+            hash_map::Entry::Occupied(mut o) => {
+                *o.get_mut() += 1;
+            }
+            hash_map::Entry::Vacant(v) => {
+                v.insert(1);
+            }
+        }
+    }
+
+    fn decrement_op(&mut self, op: String) {
+        match self.op_names.entry(op) {
+            hash_map::Entry::Occupied(mut o) => {
+                if *o.get() > 0usize {
+                    *o.get_mut() -= 1;
+                } else {
+                    o.remove();
+                }
+            }
+            _ => panic!("Cannot decrement something not added!"),
+        }
+    }
+
     fn is_wire_idle(&self, wire: Wire) -> PyResult<bool> {
         let (input_node, output_node) = match wire {
             Wire::Qubit(qubit) => (self.qubit_input_map[&qubit], self.qubit_output_map[&qubit]),
@@ -3136,7 +3240,7 @@ impl DAGCircuit {
                     .downcast_into_exact::<PyString>()
                     .unwrap()
                     .to_string();
-                self._decrement_op(op_name);
+                self.decrement_op(op_name);
             }),
             _ => panic!("Must be called with valid operation node!"),
         }

@@ -12,7 +12,7 @@ doctest = false
 [dependencies]
 ahash = "0.8.11"
 hashbrown.workspace = true
-rustworkx-core = "0.14.2"
+rustworkx-core = { git = "https://github.com/Qiskit/rustworkx.git" }
 
 [dependencies.pyo3]
 workspace = true

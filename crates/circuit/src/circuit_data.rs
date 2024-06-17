@@ -12,7 +12,7 @@
 
 use crate::bit_data::BitData;
 use crate::circuit_instruction::CircuitInstruction;
-use crate::interner::{IndexedInterner, Interner, InternerKey};
+use crate::interner::{IndexedInterner, Interner};
 use crate::packed_instruction::PackedInstruction;
 use crate::{Clbit, Qubit, SliceOrInt};
 
@@ -585,14 +585,14 @@ impl CircuitData {
                     })
                     .collect::<PyResult<Vec<Clbit>>>()?;
 
-                let qubits_id =
-                    Interner::intern(&mut self.qargs_interner, InternerKey::Value(qubits))?;
-                let clbits_id =
-                    Interner::intern(&mut self.cargs_interner, InternerKey::Value(clbits))?;
+                let qubits =
+                    Interner::intern(&mut self.qargs_interner, qubits)?;
+                let clbits =
+                    Interner::intern(&mut self.cargs_interner, clbits)?;
                 self.data.push(PackedInstruction {
                     op: inst.op.clone_ref(py),
-                    qubits_id: qubits_id.index,
-                    clbits_id: clbits_id.index,
+                    qubits_id: qubits.index,
+                    clbits_id: clbits.index,
                 });
             }
             return Ok(());
@@ -724,11 +724,11 @@ impl CircuitData {
     ) -> PyResult<PackedInstruction> {
         let qubits = Interner::intern(
             &mut self.qargs_interner,
-            InternerKey::Value(self.qubits.map_bits(value.qubits.bind(py))?.collect()),
+            self.qubits.map_bits(value.qubits.bind(py))?.collect(),
         )?;
         let clbits = Interner::intern(
             &mut self.cargs_interner,
-            InternerKey::Value(self.clbits.map_bits(value.clbits.bind(py))?.collect()),
+            self.clbits.map_bits(value.clbits.bind(py))?.collect(),
         )?;
         Ok(PackedInstruction {
             op: value.operation.clone_ref(py),
