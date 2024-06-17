@@ -13,6 +13,9 @@ doctest = false
 ahash = "0.8.11"
 hashbrown.workspace = true
 rustworkx-core = { git = "https://github.com/Qiskit/rustworkx.git" }
+num-complex.workspace = true
+ndarray.workspace = true
+numpy.workspace = true
 
 [dependencies.pyo3]
 workspace = true
@@ -21,3 +24,10 @@ features = ["hashbrown", "indexmap", "num-complex", "num-bigint", "smallvec"]
 [dependencies.indexmap]
 workspace = true
 features = ["rayon"]
+
+[dependencies.smallvec]
+workspace = true
+features = ["union"]
+
+[features]
+cache_pygates = []

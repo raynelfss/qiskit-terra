@@ -10,11 +10,12 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
-use hashbrown::HashMap;
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::{IntoPy, PyObject, PyResult, Python};
 use std::hash::Hash;
 use std::sync::Arc;
+
+use hashbrown::HashMap;
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::prelude::*;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Index(u32);
