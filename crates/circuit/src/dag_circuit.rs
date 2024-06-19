@@ -11,11 +11,14 @@
 // that they have been altered from the originals.
 
 use crate::bit_data::BitData;
-use crate::circuit_instruction::CircuitInstruction;
+use crate::circuit_instruction::PackedInstruction;
+use crate::circuit_instruction::{
+    convert_py_to_operation_type, CircuitInstruction, OperationTypeConstruct,
+};
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
 use crate::interner::{Index, IndexedInterner, Interner};
-use crate::packed_instruction::PackedInstruction;
+use crate::operations::{Operation, OperationType, Param};
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
 use hashbrown::hash_map::DefaultHashBuilder;
 use hashbrown::{hash_map, HashMap, HashSet};
@@ -444,21 +447,21 @@ def _format(operand):
     fn has_calibration_for(&self, py: Python, node: PyRef<DAGOpNode>) -> PyResult<bool> {
         let node = NodeIndex::new(node.as_ref()._node_id as usize);
         if let Some(NodeType::Operation(packed)) = self.dag.node_weight(node) {
-            let op_name: String = packed.op.bind(py).getattr(intern!(py, "name"))?.extract()?;
+            let op_name = packed.op.name().to_string();
             if !self.calibrations.contains_key(&op_name) {
                 return Ok(false);
             }
             let mut params = Vec::new();
-            for p in packed.op.bind(py).getattr(intern!(py, "params"))?.iter()? {
-                let p = p?;
-                if p.is_instance(self.circuit_module.parameter_expression.bind(py))?
-                    && !p.getattr(intern!(py, "parameters"))?.is_truthy()?
-                {
-                    // params.push(PyFloat::new_bound(py, p));
-                    todo!()
-                } else {
-                    params.push(p);
+            for p in &packed.params {
+                if let Param::ParameterExpression(exp) = p {
+                    let exp = exp.bind(py);
+                    if !exp.getattr(intern!(py, "parameters"))?.is_truthy()? {
+                        let as_py_float = exp.call_method0(intern!(py, "__float__"))?;
+                        params.push(as_py_float.unbind());
+                        continue;
+                    }
                 }
+                params.push(p.into_py(py));
             }
             let qubits: Vec<BitType> = self
                 .qargs_cache
@@ -477,12 +480,11 @@ def _format(operand):
     }
 
     /// Remove all operation nodes with the given name.
-    fn remove_all_ops_named(&mut self, py: Python<'_>, opname: &Bound<PyAny>) -> PyResult<()> {
+    fn remove_all_ops_named(&mut self, opname: &str) {
         let mut to_remove = Vec::new();
         for (id, weight) in self.dag.node_references() {
             if let NodeType::Operation(ref packed) = weight {
-                let name = packed.op.bind(py).getattr(intern!(py, "name"))?;
-                if opname.eq(&name)? {
+                if opname == packed.op.name() {
                     to_remove.push(id);
                 }
             }
@@ -490,7 +492,6 @@ def _format(operand):
         for node in to_remove {
             self.remove_op_node(node);
         }
-        Ok(())
     }
 
     /// Add individual qubit wires.
@@ -903,12 +904,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if conditioning on an invalid register
-    fn _check_condition(
-        &self,
-        py: Python,
-        name: &Bound<PyAny>,
-        condition: &Bound<PyAny>,
-    ) -> PyResult<()> {
+    fn _check_condition(&self, py: Python, name: &str, condition: &Bound<PyAny>) -> PyResult<()> {
         if condition.is_none() {
             return Ok(());
         }
@@ -997,13 +993,16 @@ def _format(operand):
         cargs: Option<TupleLikeArg>,
         check: bool,
     ) -> PyResult<Py<DAGOpNode>> {
+        let old_op = op.clone().unbind();
+        let op = convert_py_to_operation_type(py, op.unbind())?;
         let qargs = qargs.map(|q| q.value);
         let cargs = cargs.map(|c| c.value);
         let (node, sort_key) = {
-            let op_name = op.getattr(intern!(py, "name"))?;
+            let op_name = op.operation.name();
             let qargs: Vec<Qubit> = self.qubits.map_bits(qargs.iter().flatten())?.collect();
             let cargs: Vec<Clbit> = self.clbits.map_bits(cargs.iter().flatten())?.collect();
 
+            // TODO: should be able to rewrite this in terms of UniqueIterator
             let all_cbits: Vec<Clbit> = {
                 let bits: IndexSet<Clbit> = if self.operation_may_have_bits(py, &op)? {
                     // This is the slow path; most of the time, this won't happen.
@@ -1019,8 +1018,8 @@ def _format(operand):
             };
 
             if check {
-                if op.hasattr(intern!(py, "condition"))? {
-                    self._check_condition(py, &op_name, &op.getattr(intern!(py, "condition"))?)?;
+                if let Some(ref condition) = op.condition {
+                    self._check_condition(py, op_name, condition.bind(py))?;
                 }
 
                 for b in qargs.iter() {
@@ -1042,15 +1041,24 @@ def _format(operand):
                 }
             }
 
-            self.increment_op(op_name.downcast_into_exact::<PyString>()?.to_string());
+            self.increment_op(op_name.to_string());
 
             let qubits_id = Interner::intern(&mut self.qargs_cache, qargs)?;
             let clbits_id = Interner::intern(&mut self.cargs_cache, cargs)?;
-            let new_node = self.dag.add_node(NodeType::Operation(PackedInstruction {
-                op: op.clone().unbind(),
-                qubits_id,
-                clbits_id,
-            }));
+            let new_node = self
+                .dag
+                .add_node(NodeType::Operation(PackedInstruction::new(
+                    op.operation,
+                    qubits_id,
+                    clbits_id,
+                    op.params,
+                    op.label,
+                    op.duration,
+                    op.unit,
+                    op.condition,
+                    #[cfg(feature = "cache_pygates")]
+                    Some(old_op.clone_ref(py)),
+                )));
 
             // Put the new node in-between the previously "last" nodes on each wire
             // and the output map.
@@ -1085,7 +1093,8 @@ def _format(operand):
         DAGOpNode::new(
             py,
             node.index().try_into().unwrap(),
-            op.unbind(),
+            // TODO: should this be the oxidized op instead?
+            old_op,
             qargs.map(|q| q.unbind()),
             cargs.map(|c| c.unbind()),
             sort_key.into_py(py),
@@ -1117,10 +1126,12 @@ def _format(operand):
         cargs: Option<TupleLikeArg>,
         check: bool,
     ) -> PyResult<Py<DAGOpNode>> {
+        let old_op = op.clone().unbind();
+        let op = convert_py_to_operation_type(py, op.unbind())?;
         let qargs = qargs.map(|q| q.value);
         let cargs = cargs.map(|c| c.value);
         let (node, sort_key) = {
-            let op_name = op.getattr(intern!(py, "name"))?;
+            let op_name = op.operation.name();
             let qargs: Vec<Qubit> = self.qubits.map_bits(qargs.iter().flatten())?.collect();
             let cargs: Vec<Clbit> = self.clbits.map_bits(cargs.iter().flatten())?.collect();
 
@@ -1140,8 +1151,8 @@ def _format(operand):
             };
 
             if check {
-                if op.hasattr(intern!(py, "condition"))? {
-                    self._check_condition(py, &op_name, &op.getattr(intern!(py, "condition"))?)?;
+                if let Some(ref condition) = op.condition {
+                    self._check_condition(py, op_name, condition.bind(py))?;
                 }
 
                 for b in qargs.iter() {
@@ -1163,15 +1174,24 @@ def _format(operand):
                 }
             }
 
-            self.increment_op(op_name.downcast_into_exact::<PyString>()?.to_string());
+            self.increment_op(op_name.to_string());
 
             let qubits_id = Interner::intern(&mut self.qargs_cache, qargs)?;
             let clbits_id = Interner::intern(&mut self.cargs_cache, cargs)?;
-            let new_node = self.dag.add_node(NodeType::Operation(PackedInstruction {
-                op: op.clone().unbind(),
-                qubits_id,
-                clbits_id,
-            }));
+            let new_node = self
+                .dag
+                .add_node(NodeType::Operation(PackedInstruction::new(
+                    op.operation,
+                    qubits_id,
+                    clbits_id,
+                    op.params,
+                    op.label,
+                    op.duration,
+                    op.unit,
+                    op.condition,
+                    #[cfg(feature = "cache_pygates")]
+                        Some(old_op.clone_ref(py)),
+                )));
 
             // Put the new node in-between the input map and the previously
             // "first" nodes on each wire.
@@ -1206,7 +1226,7 @@ def _format(operand):
         DAGOpNode::new(
             py,
             node.index().try_into().unwrap(),
-            op.unbind(),
+            old_op,
             qargs.map(|q| q.unbind()),
             cargs.map(|c| c.unbind()),
             sort_key.into_py(py),
@@ -3015,21 +3035,37 @@ impl DAGCircuit {
         Ok(child == output_node)
     }
 
-    /// Return whether a given :class:`.Operation` may contain any :class:`.Clbit` instances
+    /// Return whether a given [OperationTypeConstruct] may contain any :class:`.Clbit` instances
     /// in itself (e.g. a control-flow operation).
     ///
     /// Args:
-    ///     operation (qiskit.circuit.Operation): the operation to check.
-    fn operation_may_have_bits(&self, py: Python, operation: &Bound<PyAny>) -> PyResult<bool> {
+    ///     operation ([OperationTypeConstruct]): the operation to check.
+    fn operation_may_have_bits(
+        &self,
+        py: Python,
+        operation: &OperationTypeConstruct,
+    ) -> PyResult<bool> {
         // This is separate to `bits_in_operation` because most of the time there won't be any bits,
         // so we want a fast path to be able to skip creating and testing a generator for emptiness.
         //
         // If updating this, also update `DAGCirucit._bits_in_operation`.
-        Ok((operation.hasattr(intern!(py, "condition"))?
-            && !operation.getattr(intern!(py, "condition"))?.is_none())
-            || operation
-                .get_type()
-                .eq(&self.circuit_module.switch_case_op)?)
+        let has_condition = match operation.condition {
+            None => false,
+            Some(ref condition) => !condition.bind(py).is_none(),
+        };
+
+        if has_condition {
+            return Ok(true);
+        }
+
+        if let OperationType::Instruction(ref inst) = operation.operation {
+            Ok(inst
+                .instruction
+                .bind(py)
+                .is_instance(self.circuit_module.switch_case_op.bind(py))?)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Return an iterable over the classical bits that are inherent to an instruction.  This
@@ -3043,11 +3079,11 @@ impl DAGCircuit {
     fn bits_in_operation<'py>(
         &self,
         py: Python<'py>,
-        operation: &'py Bound<PyAny>,
+        operation: &OperationTypeConstruct,
     ) -> PyResult<Vec<Bound<'py, PyAny>>> {
         let mut bits = Vec::new();
         // If updating this, also update the fast-path checker `operation_may_have_bits`.
-        if let Ok(condition) = operation.getattr(intern!(py, "condition")) {
+        if let Some(condition) = operation.condition.map(|c| c.bind(py)) {
             if !condition.is_none() {
                 for bit in self
                     .control_flow_module
@@ -3060,22 +3096,25 @@ impl DAGCircuit {
             }
         }
 
-        if operation.is_instance(self.circuit_module.switch_case_op.bind(py))? {
-            let target = operation.getattr(intern!(py, "target"))?;
-            if target.is_instance(self.circuit_module.clbit.bind(py))? {
-                bits.push(target);
-            } else if target.is_instance(self.circuit_module.classical_register.bind(py))? {
-                for bit in target.iter()? {
-                    bits.push(bit?);
-                }
-            } else {
-                for bit in self
-                    .control_flow_module
-                    .node_resources(&target)?
-                    .clbits
-                    .bind(py)
-                {
-                    bits.push(bit);
+        if let OperationType::Instruction(ref inst) = operation.operation {
+            let op = inst.instruction.bind(py);
+            if op.is_instance(self.circuit_module.switch_case_op.bind(py))? {
+                let target = op.getattr(intern!(py, "target"))?;
+                if target.is_instance(self.circuit_module.clbit.bind(py))? {
+                    bits.push(target);
+                } else if target.is_instance(self.circuit_module.classical_register.bind(py))? {
+                    for bit in target.iter()? {
+                        bits.push(bit?);
+                    }
+                } else {
+                    for bit in self
+                        .control_flow_module
+                        .node_resources(&target)?
+                        .clbits
+                        .bind(py)
+                    {
+                        bits.push(bit);
+                    }
                 }
             }
         }

@@ -1522,16 +1522,16 @@ impl CircuitData {
     fn pack(&mut self, py: Python, inst: PyRef<CircuitInstruction>) -> PyResult<PackedInstruction> {
         let qubits = Interner::intern(
             &mut self.qargs_interner,
-            InternerKey::Value(self.qubits.map_bits(inst.qubits.bind(py))?.collect()),
+            self.qubits.map_bits(inst.qubits.bind(py))?.collect(),
         )?;
         let clbits = Interner::intern(
             &mut self.cargs_interner,
-            InternerKey::Value(self.clbits.map_bits(inst.clbits.bind(py))?.collect()),
+            self.clbits.map_bits(inst.clbits.bind(py))?.collect(),
         )?;
         Ok(PackedInstruction {
             op: inst.operation.clone(),
-            qubits_id: qubits.index,
-            clbits_id: clbits.index,
+            qubits_id: qubits,
+            clbits_id: clbits,
             params: inst.params.clone(),
             extra_attrs: inst.extra_attrs.clone(),
             #[cfg(feature = "cache_pygates")]

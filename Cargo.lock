@@ -1199,8 +1199,8 @@ version = "1.2.0"
 dependencies = [
  "ahash 0.8.11",
  "hashbrown 0.14.5",
- "ndarray",
  "indexmap 2.2.6",
+ "ndarray",
  "num-complex",
  "numpy",
  "pyo3",
