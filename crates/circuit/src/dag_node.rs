@@ -14,11 +14,12 @@ use crate::circuit_instruction::{
     convert_py_to_operation_type, operation_type_to_py, CircuitInstruction,
     ExtraInstructionAttributes,
 };
-use crate::operations::Operation;
+use crate::operations::{Operation, OperationType, Param};
 use crate::TupleLikeArg;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySequence, PyString, PyTuple};
 use pyo3::{intern, PyObject, PyResult};
+use smallvec::SmallVec;
 
 /// Parent class for DAGOpNode, DAGInNode, and DAGOutNode.
 #[pyclass(module = "qiskit._accelerate.circuit", subclass)]
@@ -70,27 +71,28 @@ pub struct DAGOpNode {
 }
 
 impl DAGOpNode {
-    pub fn new(
+    pub fn new<T1, T2, U1, U2>(
         py: Python,
         id: isize,
-        op: Py<PyAny>,
-        qargs: Option<Py<PyTuple>>,
-        cargs: Option<Py<PyTuple>>,
+        op: OperationType,
+        qargs: impl IntoIterator<Item = T1, IntoIter = U1>,
+        cargs: impl IntoIterator<Item = T2, IntoIter = U2>,
+        params: SmallVec<[Param; 3]>,
+        extra_attrs: Option<Box<ExtraInstructionAttributes>>,
         sort_key: Py<PyAny>,
-    ) -> PyResult<Py<Self>> {
-        Py::new(
-            py,
-            (
-                DAGOpNode {
-                    instruction: CircuitInstruction {
-                        operation: op,
-                        qubits: qargs.unwrap_or_else(|| PyTuple::empty_bound(py).unbind()),
-                        clbits: cargs.unwrap_or_else(|| PyTuple::empty_bound(py).unbind()),
-                    },
-                    sort_key,
-                },
-                DAGNode { _node_id: id },
-            ),
+    ) -> (Self, DAGNode)
+    where
+        T1: ToPyObject,
+        T2: ToPyObject,
+        U1: ExactSizeIterator<Item = T1>,
+        U2: ExactSizeIterator<Item = T2>,
+    {
+        (
+            DAGOpNode {
+                instruction: CircuitInstruction::new(py, op, qargs, cargs, params, extra_attrs),
+                sort_key,
+            },
+            DAGNode { _node_id: id },
         )
     }
 }
@@ -152,21 +154,24 @@ impl DAGOpNode {
             None
         };
 
-        Ok((
-            DAGOpNode {
-                instruction: CircuitInstruction {
-                    operation: res.operation,
-                    qubits: qargs.unbind(),
-                    clbits: cargs.unbind(),
-                    params: res.params,
-                    extra_attrs,
-                    #[cfg(feature = "cache_pygates")]
-                    py_op: Some(op),
+        Py::new(
+            py,
+            (
+                DAGOpNode {
+                    instruction: CircuitInstruction {
+                        operation: res.operation,
+                        qubits: qargs.unbind(),
+                        clbits: cargs.unbind(),
+                        params: res.params,
+                        extra_attrs,
+                        #[cfg(feature = "cache_pygates")]
+                        py_op: Some(op),
+                    },
+                    sort_key: sort_key.unbind(),
                 },
-                sort_key: sort_key.unbind(),
-            },
-            DAGNode { _node_id: -1 },
-        ))
+                DAGNode { _node_id: -1 },
+            ),
+        )
     }
 
     fn __reduce__(slf: PyRef<Self>, py: Python) -> PyResult<PyObject> {
@@ -277,16 +282,13 @@ pub struct DAGInNode {
 }
 
 impl DAGInNode {
-    pub fn new(py: Python, id: isize, wire: PyObject) -> PyResult<Py<Self>> {
-        Py::new(
-            py,
-            (
-                DAGInNode {
-                    wire,
-                    sort_key: PyList::empty_bound(py).str()?.into_any().unbind(),
-                },
-                DAGNode { _node_id: id },
-            ),
+    pub fn new(py: Python, id: isize, wire: PyObject) -> (Self, DAGNode) {
+        (
+            DAGInNode {
+                wire,
+                sort_key: PyList::empty_bound(py).str().unwrap().into_any().unbind(),
+            },
+            DAGNode { _node_id: id },
         )
     }
 }
@@ -332,16 +334,13 @@ pub struct DAGOutNode {
 }
 
 impl DAGOutNode {
-    pub fn new(py: Python, id: isize, wire: PyObject) -> PyResult<Py<Self>> {
-        Py::new(
-            py,
-            (
-                DAGOutNode {
-                    wire,
-                    sort_key: PyList::empty_bound(py).str()?.into_any().unbind(),
-                },
-                DAGNode { _node_id: id },
-            ),
+    pub fn new(py: Python, id: isize, wire: PyObject) -> (Self, DAGNode) {
+        (
+            DAGOutNode {
+                wire,
+                sort_key: PyList::empty_bound(py).str().unwrap().into_any().unbind(),
+            },
+            DAGNode { _node_id: id },
         )
     }
 }
