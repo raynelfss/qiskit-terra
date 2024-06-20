@@ -445,7 +445,7 @@ def _format(operand):
     /// Return True if the dag has a calibration defined for the node operation. In this
     /// case, the operation does not need to be translated to the device basis.
     fn has_calibration_for(&self, py: Python, node: PyRef<DAGOpNode>) -> PyResult<bool> {
-        let node = NodeIndex::new(node.as_ref()._node_id as usize);
+        let node = node.as_ref().node.unwrap();
         if let Some(NodeType::Operation(packed)) = self.dag.node_weight(node) {
             let op_name = packed.op.name().to_string();
             if !self.calibrations.contains_key(&op_name) {
@@ -1239,7 +1239,7 @@ def _format(operand):
     ///     DAGCircuitError: if ``other`` is wider or there are duplicate edge mappings.
     #[pyo3(signature = (other, qubits=None, clbits=None, front=false, inplace=true))]
     fn compose(
-        &mut self,
+        slf: PyRefMut<Self>,
         other: &DAGCircuit,
         qubits: Option<Bound<PyList>>,
         clbits: Option<Bound<PyList>>,
@@ -1252,7 +1252,7 @@ def _format(operand):
             ));
         }
 
-        if other.qubits.len() > self.qubits.len() || other.clbits.len() > self.clbits.len() {
+        if other.qubits.len() > slf.qubits.len() || other.clbits.len() > slf.clbits.len() {
             return Err(DAGCircuitError::new_err(
                 "Trying to compose with another DAGCircuit which has more 'in' edges.",
             ));
@@ -1732,10 +1732,7 @@ def _format(operand):
             }
         }
 
-        let block_ids: Vec<_> = node_block
-            .iter()
-            .map(|n| NodeIndex::new(n._node_id as usize))
-            .collect();
+        let block_ids: Vec<_> = node_block.iter().map(|n| n.node.unwrap()).collect();
 
         let mut block_op_names = Vec::new();
         let mut block_qargs: IndexSet<Qubit> = IndexSet::new();
@@ -2410,7 +2407,7 @@ def _format(operand):
     fn successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
         let successors: PyResult<Vec<_>> = self
             .dag
-            .neighbors_directed(NodeIndex::new(node._node_id as usize), Outgoing)
+            .neighbors_directed(node.node.unwrap(), Outgoing)
             .unique()
             .map(|i| self.get_node(py, i))
             .collect();
@@ -2425,7 +2422,7 @@ def _format(operand):
     fn predecessors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
         let predecessors: PyResult<Vec<_>> = self
             .dag
-            .neighbors_directed(NodeIndex::new(node._node_id as usize), Incoming)
+            .neighbors_directed(node.node.unwrap(), Incoming)
             .unique()
             .map(|i| self.get_node(py, i))
             .collect();
@@ -2439,28 +2436,21 @@ def _format(operand):
     /// Checks if a second node is in the successors of node.
     fn is_successor(&self, node: &DAGNode, node_succ: &DAGNode) -> bool {
         self.dag
-            .find_edge(
-                NodeIndex::new(node._node_id as usize),
-                NodeIndex::new(node_succ._node_id as usize),
-            )
+            .find_edge(node.node.unwrap(), node_succ.node.unwrap())
             .is_some()
     }
 
     /// Checks if a second node is in the predecessors of node.
     fn is_predecessor(&self, node: &DAGNode, node_pred: &DAGNode) -> bool {
         self.dag
-            .find_edge(
-                NodeIndex::new(node_pred._node_id as usize),
-                NodeIndex::new(node._node_id as usize),
-            )
+            .find_edge(node_pred.node.unwrap(), node.node.unwrap())
             .is_some()
     }
 
     /// Returns iterator of the predecessors of a node that are
     /// connected by a quantum edge as DAGOpNodes and DAGInNodes.
     fn quantum_predecessors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
-        let node = NodeIndex::new(node._node_id as usize);
-        let edges = self.dag.edges_directed(node, Incoming);
+        let edges = self.dag.edges_directed(node.node.unwrap(), Incoming);
         let filtered = edges.filter_map(|e| match e.weight() {
             Wire::Qubit(_) => Some(e.source()),
             _ => None,
@@ -2477,8 +2467,7 @@ def _format(operand):
     /// Returns iterator of the predecessors of a node that are
     /// connected by a classical edge as DAGOpNodes and DAGInNodes.
     fn classical_predecessors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
-        let node = NodeIndex::new(node._node_id as usize);
-        let edges = self.dag.edges_directed(node, Incoming);
+        let edges = self.dag.edges_directed(node.node.unwrap(), Incoming);
         let filtered = edges.filter_map(|e| match e.weight() {
             Wire::Clbit(_) => Some(e.source()),
             _ => None,
@@ -2514,8 +2503,7 @@ def _format(operand):
     /// Returns iterator of the successors of a node that are
     /// connected by a quantum edge as DAGOpNodes and DAGOutNodes.
     fn quantum_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
-        let node = NodeIndex::new(node._node_id as usize);
-        let edges = self.dag.edges_directed(node, Outgoing);
+        let edges = self.dag.edges_directed(node.node.unwrap(), Outgoing);
         let filtered = edges.filter_map(|e| match e.weight() {
             Wire::Qubit(_) => Some(e.target()),
             _ => None,
@@ -2532,8 +2520,7 @@ def _format(operand):
     /// Returns iterator of the successors of a node that are
     /// connected by a classical edge as DAGOpNodes and DAGOutNodes.
     fn classical_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
-        let node = NodeIndex::new(node._node_id as usize);
-        let edges = self.dag.edges_directed(node, Incoming);
+        let edges = self.dag.edges_directed(node.node.unwrap(), Incoming);
         let filtered = edges.filter_map(|e| match e.weight() {
             Wire::Clbit(_) => Some(e.target()),
             _ => None,
@@ -2552,8 +2539,7 @@ def _format(operand):
     /// Add edges from predecessors to successors.
     #[pyo3(name = "remove_op_node")]
     fn py_remove_op_node(&mut self, node: PyRef<DAGOpNode>) -> PyResult<()> {
-        let index = NodeIndex::new(node.as_ref()._node_id as usize);
-        self.remove_op_node(index);
+        self.remove_op_node(node.as_ref().node.unwrap());
         Ok(())
     }
 
@@ -3248,7 +3234,6 @@ impl DAGCircuit {
     }
 
     fn unpack_into(&self, py: Python, id: NodeIndex, weight: &NodeType) -> PyResult<Py<PyAny>> {
-        let id = id.index() as isize;
         let dag_node = match weight {
             NodeType::QubitIn(qubit) => Py::new(
                 py,
