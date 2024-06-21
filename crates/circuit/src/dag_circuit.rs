@@ -17,6 +17,7 @@ use crate::circuit_instruction::{
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
+use crate::imports::VARIABLE_MAPPER;
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
@@ -27,11 +28,12 @@ use indexmap::{IndexMap, IndexSet};
 use petgraph::prelude::*;
 use pyo3::callback::IntoPyCallbackOutput;
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
+use pyo3::ffi::PyCFunction;
 use pyo3::prelude::*;
 use pyo3::types::iter::BoundTupleIterator;
 use pyo3::types::{
-    PyDict, PyFloat, PyFrozenSet, PyInt, PyIterator, PyList, PySequence, PySet, PySlice, PyString,
-    PyTuple, PyType,
+    IntoPyDict, PyDict, PyFloat, PyFrozenSet, PyInt, PyIterator, PyList, PySequence, PySet,
+    PySlice, PyString, PyTuple, PyType,
 };
 use pyo3::{intern, PyObject, PyResult, PyVisit};
 use rustworkx_core::err::ContractError;
@@ -226,6 +228,7 @@ struct PyCircuitModule {
     store: Py<PyType>,
     gate: Py<PyType>,
     parameter_expression: Py<PyType>,
+    variable_mapper: Py<PyType>,
 }
 
 impl PyCircuitModule {
@@ -263,9 +266,84 @@ impl PyCircuitModule {
                 .getattr("ParameterExpression")?
                 .downcast_into_exact()?
                 .unbind(),
+            variable_mapper: module
+                .getattr("_classical_resource_map")?
+                .getattr("VariableMapper")?
+                .downcast_into_exact()?
+                .unbind(),
         })
     }
 }
+
+struct PyVariableMapper {
+    mapper: Py<PyAny>,
+}
+
+impl PyVariableMapper {
+    fn new(
+        py: Python,
+        target_cregs: Bound<PyAny>,
+        bit_map: Option<Bound<PyDict>>,
+        var_map: Option<Bound<PyDict>>,
+        add_register: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let kwargs: HashMap<&str, Option<Py<PyAny>>> =
+            HashMap::from_iter([("add_register", add_register)]);
+        Ok(PyVariableMapper {
+            mapper: VARIABLE_MAPPER
+                .get_bound(py)
+                .call(
+                    (target_cregs, bit_map, var_map),
+                    Some(&kwargs.into_py_dict_bound(py)),
+                )?
+                .unbind(),
+        })
+    }
+
+    fn map_condition<'py>(
+        &self,
+        condition: &Bound<'py, PyAny>,
+        allow_reorder: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = condition.py();
+        let kwargs: HashMap<&str, Py<PyAny>> =
+            HashMap::from_iter([("allow_reorder", allow_reorder.into_py(py))]);
+        self.mapper.bind(py).call_method(
+            intern!(py, "map_condition"),
+            (condition,),
+            Some(&kwargs.into_py_dict_bound(py)),
+        )
+    }
+
+    fn map_target<'py>(&self, target: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let py = target.py();
+        self.mapper
+            .bind(py)
+            .call_method1(intern!(py, "map_target"), (target,))
+    }
+
+    fn map_expr<'py>(&self, node: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let py = node.py();
+        self.mapper
+            .bind(py)
+            .call_method1(intern!(py, "map_expr"), (node,))
+    }
+}
+
+#[pyfunction]
+fn reject_new_register(reg: &Bound<PyAny>) -> PyResult<()> {
+    Err(DAGCircuitError::new_err(format!(
+        "No register with '{:?}' to map this expression onto.",
+        reg.getattr("bits")?
+    )))
+}
+
+impl IntoPy<Py<PyAny>> for PyVariableMapper {
+    fn into_py(self, _py: Python<'_>) -> Py<PyAny> {
+        self.mapper
+    }
+}
+
 #[pyclass(module = "qiskit._accelerate.circuit")]
 #[derive(Clone, Debug)]
 struct BitLocations {
@@ -1240,6 +1318,7 @@ def _format(operand):
     #[pyo3(signature = (other, qubits=None, clbits=None, front=false, inplace=true))]
     fn compose(
         slf: PyRefMut<Self>,
+        py: Python,
         other: &DAGCircuit,
         qubits: Option<Bound<PyList>>,
         clbits: Option<Bound<PyList>>,
@@ -1259,25 +1338,118 @@ def _format(operand):
         }
 
         // Number of qubits and clbits must match number in circuit or None
+        let identity_qubit_map = other
+            .qubits
+            .bits()
+            .iter()
+            .zip(slf.qubits.bits())
+            .into_py_dict_bound(py);
+        let identity_clbit_map = other
+            .clbits
+            .bits()
+            .iter()
+            .zip(slf.clbits.bits())
+            .into_py_dict_bound(py);
 
-        // if front:
-        //     raise DAGCircuitError("Front composition not supported yet.")
-        //
-        // if len(other.qubits) > len(self.qubits) or len(other.clbits) > len(self.clbits):
-        //     raise DAGCircuitError(
-        //         "Trying to compose with another DAGCircuit which has more 'in' edges."
-        //     )
-        //
-        // # number of qubits and clbits must match number in circuit or None
-        // identity_qubit_map = dict(zip(other.qubits, self.qubits))
-        // identity_clbit_map = dict(zip(other.clbits, self.clbits))
+        let qubit_map: Bound<PyDict> = match qubits {
+            None => identity_qubit_map.clone(),
+            Some(qubits) => {
+                if qubits.len() != other.qubits.len() {
+                    return Err(DAGCircuitError::new_err(concat!(
+                        "Number of items in qubits parameter does not",
+                        " match number of qubits in the circuit."
+                    )));
+                }
+
+                let self_qubits = slf.qubits.cached().bind(py);
+                let other_qubits = other.qubits.cached().bind(py);
+                let dict = PyDict::new_bound(py);
+                for (i, q) in qubits.iter().enumerate() {
+                    let q = if q.is_instance_of::<PyInt>() {
+                        self_qubits.get_item(q.extract()?)?
+                    } else {
+                        q
+                    };
+
+                    dict.set_item(other_qubits.get_item(i)?, q)?;
+                }
+                dict
+            }
+        };
+
+        let clbit_map: Bound<PyDict> = match clbits {
+            None => identity_clbit_map.clone(),
+            Some(clbits) => {
+                if clbits.len() != other.clbits.len() {
+                    return Err(DAGCircuitError::new_err(concat!(
+                        "Number of items in clbits parameter does not",
+                        " match number of clbits in the circuit."
+                    )));
+                }
+
+                let self_clbits = slf.clbits.cached().bind(py);
+                let other_clbits = other.clbits.cached().bind(py);
+                let dict = PyDict::new_bound(py);
+                for (i, q) in clbits.iter().enumerate() {
+                    let q = if q.is_instance_of::<PyInt>() {
+                        self_clbits.get_item(q.extract()?)?
+                    } else {
+                        q
+                    };
+
+                    dict.set_item(other_clbits.get_item(i)?, q)?;
+                }
+                dict
+            }
+        };
+
+        let edge_map = if qubit_map.is_empty() && clbit_map.is_empty() {
+            // try to do a 1-1 mapping in order
+            identity_qubit_map
+                .iter()
+                .chain(identity_clbit_map.iter())
+                .into_py_dict_bound(py)
+        } else {
+            qubit_map
+                .iter()
+                .chain(clbit_map.iter())
+                .into_py_dict_bound(py)
+        };
+
+        {
+            // TODO: is there a better way to do this?
+            let edge_map_values: Vec<_> = edge_map.values().iter().collect();
+            if PySet::new_bound(py, edge_map_values.as_slice())?.len() != edge_map.len() {
+                return Err(DAGCircuitError::new_err("duplicates in wire_map"));
+            }
+        }
+
+        // Compose
+        let mut dag: PyRefMut<DAGCircuit> = if inplace {
+            slf
+        } else {
+            Py::new(py, slf.clone())?.into_bound(py).borrow_mut()
+        };
+
+        dag.global_phase = dag.global_phase.bind(py).add(&other.global_phase)?.unbind();
+
+        for (gate, cals) in other.calibrations.iter() {
+            dag.calibrations[gate]
+                .bind(py)
+                .update(&cals.bind(py).as_mapping())?;
+        }
+
+        let variable_mapper = PyVariableMapper::new(
+            py,
+            dag.cregs.bind(py).values().into_any(),
+            Some(edge_map),
+            None,
+            Some(wrap_pyfunction_bound!(reject_new_register, py)?.to_object(py)),
+        );
         // if qubits is None:
         //     qubit_map = identity_qubit_map
         // elif len(qubits) != len(other.qubits):
-        //     raise DAGCircuitError(
-        //         "Number of items in qubits parameter does not"
-        //         " match number of qubits in the circuit."
-        //     )
+        //     raise DAGCircuitError
         // else:
         //     qubit_map = {
         //         other.qubits[i]: (self.qubits[q] if isinstance(q, int) else q)
