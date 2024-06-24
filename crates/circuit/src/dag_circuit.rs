@@ -43,6 +43,7 @@ use rustworkx_core::petgraph::prelude::StableDiGraph;
 use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, NodeIndex};
 use rustworkx_core::petgraph::visit::{IntoNodeReferences, NodeCount, NodeRef};
 use rustworkx_core::petgraph::Incoming;
+use std::convert::Infallible;
 use std::f64::consts::PI;
 use std::ffi::c_double;
 use std::hash::{Hash, Hasher};
@@ -98,6 +99,16 @@ enum NodeType {
     ClbitIn(Clbit),
     ClbitOut(Clbit),
     Operation(PackedInstruction),
+}
+
+impl NodeType {
+    #[inline]
+    pub fn key(&self) -> (Option<Index>, Option<Index>) {
+        match self {
+            NodeType::Operation(packed) => (Some(packed.qubits_id), Some(packed.clbits_id)),
+            _ => (None, None),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -1811,15 +1822,44 @@ def _format(operand):
     ///
     /// Returns:
     ///     generator(DAGOpNode, DAGInNode, or DAGOutNode): node in topological order
-    fn topological_nodes(&self, key: Option<Bound<PyAny>>) -> PyResult<Py<PyIterator>> {
-        // def _key(x):
-        //     return x.sort_key
-        //
-        // if key is None:
-        //     key = _key
-        //
-        // return iter(rx.lexicographical_topological_sort(self._multi_graph, key=key))
-        todo!()
+    #[pyo3(name = "topological_nodes")]
+    fn py_topological_nodes(
+        &self,
+        py: Python,
+        key: Option<Bound<PyAny>>,
+    ) -> PyResult<Py<PyIterator>> {
+        let nodes: PyResult<Vec<_>> = if let Some(key) = key {
+            // This path (user provided key func) is not ideal, since we no longer
+            // use a string key after moving to Rust, in favor of using a tuple
+            // of the qargs and cargs interner IDs of the node.
+            let key = |node: NodeIndex| -> PyResult<String> {
+                let node = self.get_node(py, node)?;
+                Ok(key.call1((node,))?.extract()?)
+            };
+            rustworkx_core::dag_algo::lexicographical_topological_sort(&self.dag, key, false, None)
+                .map_err(|e| match e {
+                    rustworkx_core::dag_algo::TopologicalSortError::CycleOrBadInitialState => {
+                        PyValueError::new_err(format!("{}", e))
+                    }
+                    rustworkx_core::dag_algo::TopologicalSortError::KeyError(ref e) => {
+                        e.clone_ref(py)
+                    }
+                })?
+                .into_iter()
+                .map(|n| self.get_node(py, n))
+                .collect()
+        } else {
+            // Good path, using interner IDs.
+            self.topological_nodes()?
+                .map(|n| self.get_node(py, n))
+                .collect()
+        };
+
+        Ok(PyTuple::new_bound(py, nodes?)
+            .into_any()
+            .iter()
+            .unwrap()
+            .unbind())
     }
 
     /// Yield op nodes in topological order.
@@ -2264,7 +2304,7 @@ def _format(operand):
     #[pyo3(signature = (node, op, inplace=false, propagate_condition=true))]
     fn substitute_node(
         &mut self,
-        node: &DAGOpNode,
+        node: PyRefMut<DAGOpNode>,
         op: &Bound<PyAny>,
         inplace: bool,
         propagate_condition: bool,
@@ -3131,6 +3171,23 @@ impl DAGCircuit {
             }
             _ => panic!("Cannot decrement something not added!"),
         }
+    }
+
+    fn topological_nodes(&self) -> PyResult<impl Iterator<Item = NodeIndex>> {
+        let key = |node: NodeIndex| -> Result<(Option<Index>, Option<Index>), Infallible> {
+            Ok(self.dag.node_weight(node).unwrap().key())
+        };
+        let nodes =
+            rustworkx_core::dag_algo::lexicographical_topological_sort(&self.dag, key, false, None)
+                .map_err(|e| match e {
+                    rustworkx_core::dag_algo::TopologicalSortError::CycleOrBadInitialState => {
+                        PyValueError::new_err(format!("{}", e))
+                    }
+                    rustworkx_core::dag_algo::TopologicalSortError::KeyError(_) => {
+                        unreachable!()
+                    }
+                })?;
+        Ok(nodes.into_iter())
     }
 
     fn is_wire_idle(&self, wire: Wire) -> PyResult<bool> {

@@ -550,17 +550,6 @@ checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
 
 [[package]]
 name = "indexmap"
-version = "1.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
-dependencies = [
- "autocfg",
- "hashbrown 0.12.3",
- "rayon",
-]
-
-[[package]]
-name = "indexmap"
 version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "168fb715dda47215e360912c096649d23d58bf392ac62f73919e831745e40f26"
@@ -907,7 +896,7 @@ checksum = "a8c3d637a7db9ddb3811719db8a466bd4960ea668df4b2d14043a1b0038465b0"
 dependencies = [
  "cov-mark",
  "either",
- "indexmap 2.2.6",
+ "indexmap",
  "itertools 0.10.5",
  "once_cell",
  "oq3_lexer",
@@ -1002,7 +991,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
- "indexmap 2.2.6",
+ "indexmap",
 ]
 
 [[package]]
@@ -1025,7 +1014,7 @@ checksum = "70c501afe3a2e25c9bd219aa56ec1e04cdb3fcdd763055be268778c13fa82c1f"
 dependencies = [
  "autocfg",
  "equivalent",
- "indexmap 2.2.6",
+ "indexmap",
 ]
 
 [[package]]
@@ -1106,7 +1095,7 @@ checksum = "a5e00b96a521718e08e03b1a622f01c8a8deb50719335de3f60b3b3950f069d8"
 dependencies = [
  "cfg-if",
  "hashbrown 0.14.5",
- "indexmap 2.2.6",
+ "indexmap",
  "indoc",
  "libc",
  "memoffset",
@@ -1175,7 +1164,7 @@ dependencies = [
  "faer",
  "faer-ext",
  "hashbrown 0.14.5",
- "indexmap 2.2.6",
+ "indexmap",
  "itertools 0.13.0",
  "ndarray",
  "num-bigint",
@@ -1199,7 +1188,7 @@ version = "1.2.0"
 dependencies = [
  "ahash 0.8.11",
  "hashbrown 0.14.5",
- "indexmap 2.2.6",
+ "indexmap",
  "ndarray",
  "num-complex",
  "numpy",
@@ -1233,7 +1222,7 @@ name = "qiskit-qasm3"
 version = "1.2.0"
 dependencies = [
  "hashbrown 0.14.5",
- "indexmap 2.2.6",
+ "indexmap",
  "oq3_semantics",
  "pyo3",
 ]
@@ -1405,12 +1394,12 @@ checksum = "80af6f9131f277a45a3fba6ce8e2258037bb0477a67e610d3c1fe046ab31de47"
 [[package]]
 name = "rustworkx-core"
 version = "0.15.0"
-source = "git+https://github.com/Qiskit/rustworkx.git#70b71260ecc1d7aeb9bc5a456e87b4c89b8f5370"
+source = "git+https://github.com/Qiskit/rustworkx.git#326a4d324218a7d9aea1e84f3b39f3c449113755"
 dependencies = [
  "ahash 0.8.11",
  "fixedbitset",
  "hashbrown 0.14.5",
- "indexmap 1.9.3",
+ "indexmap",
  "ndarray",
  "num-traits",
  "petgraph",
