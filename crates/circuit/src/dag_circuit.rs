@@ -43,6 +43,11 @@ use rustworkx_core::petgraph::prelude::StableDiGraph;
 use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, NodeIndex};
 use rustworkx_core::petgraph::visit::{IntoNodeReferences, NodeCount, NodeRef};
 use rustworkx_core::petgraph::Incoming;
+use rustworkx_core::traversal::{
+    ancestors as core_ancestors, bfs_successors as core_bfs_successors,
+    descendants as core_descendants,
+};
+use std::borrow::Borrow;
 use std::convert::Infallible;
 use std::f64::consts::PI;
 use std::ffi::c_double;
@@ -253,7 +258,7 @@ impl PyCircuitModule {
                 .downcast_into_exact()?
                 .unbind(),
             quantum_register: module
-                .getattr("QuantumRegsiter")?
+                .getattr("QuantumRegister")?
                 .downcast_into_exact()?
                 .unbind(),
             control_flow_op: module
@@ -2695,21 +2700,60 @@ def _format(operand):
 
     /// Returns set of the ancestors of a node as DAGOpNodes and DAGInNodes.
     fn ancestors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return {self._multi_graph[x] for x in rx.ancestors(self._multi_graph, node._node_id)}
-        todo!()
+        if let Some(node_index) = node.node {
+            let ancestors = core_ancestors(&self.dag, node_index)
+                .filter_map(|node| self.get_node(py, node).ok());
+            let ancestor_set = PySet::empty_bound(py)?;
+            for ancestor in ancestors {
+                ancestor_set.add(ancestor)?;
+            }
+            return Ok(ancestor_set.unbind());
+        } else {
+            unreachable!("The provided {:?} is not properly initialized.", node)
+        }
     }
 
     /// Returns set of the descendants of a node as DAGOpNodes and DAGOutNodes.
     fn descendants(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return {self._multi_graph[x] for x in rx.descendants(self._multi_graph, node._node_id)}
-        todo!()
+        if let Some(node_index) = node.node {
+            let descendants = core_descendants(&self.dag, node_index)
+                .filter_map(|node| self.get_node(py, node).ok());
+            let descendant_set = PySet::empty_bound(py)?;
+            for descendant in descendants {
+                descendant_set.add(descendant)?;
+            }
+            return Ok(descendant_set.unbind());
+        } else {
+            unreachable!("The provided {:?} is not properly initialized.", node)
+        }
     }
 
     /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
     /// and [DAGNode] is its successors in  BFS order.
     fn bfs_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
         // return iter(rx.bfs_successors(self._multi_graph, node._node_id))
-        todo!()
+        if let Some(node_index) = node.node {
+            let descendants =
+                core_bfs_successors(&self.dag, node_index).filter_map(|(node, nodes)| {
+                    match (
+                        self.get_node(py, node).ok(),
+                        nodes
+                            .iter()
+                            .filter_map(|sub_node| self.get_node(py, *sub_node).ok())
+                            .collect::<Vec<_>>(),
+                    ) {
+                        (Some(node), nodes) => Some((node, nodes)),
+                        _ => None,
+                    }
+                });
+            let descendant_set = PySet::empty_bound(py)?;
+            for descendant in descendants {
+                descendant_set.add(descendant)?;
+            }
+            return Ok(descendant_set.unbind());
+        } else {
+            unreachable!("The provided {:?} is not properly initialized.", node)
+        }
     }
 
     /// Returns iterator of the successors of a node that are
