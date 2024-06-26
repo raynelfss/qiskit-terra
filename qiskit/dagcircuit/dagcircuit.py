@@ -59,8 +59,13 @@ BitLocations = namedtuple("BitLocations", ("index", "registers"))
 # The allowable arguments to :meth:`DAGCircuit.copy_empty_like`'s ``vars_mode``.
 _VarsMode = Literal["alike", "captures", "drop"]
 
+import qiskit._accelerate.circuit
 
-class DAGCircuit:
+
+DAGCircuit = qiskit._accelerate.circuit.DAGCircuit
+
+
+class _OldDAGCircuit:
     """
     Quantum circuit as a directed acyclic graph.
 
