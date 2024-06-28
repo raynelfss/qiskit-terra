@@ -17,7 +17,7 @@ use crate::circuit_instruction::{
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
-use crate::imports::VARIABLE_MAPPER;
+use crate::imports::{DAG_NODE, VARIABLE_MAPPER};
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
@@ -133,7 +133,9 @@ pub struct DAGCircuit {
 
     dag: StableDiGraph<NodeType, Wire>,
 
+    #[pyo3(get)]
     qregs: Py<PyDict>,
+    #[pyo3(get)]
     cregs: Py<PyDict>,
 
     /// The cache used to intern instruction qargs.
@@ -377,6 +379,35 @@ impl DAGCircuit {
             control_flow_module: PyControlFlowModule::new(py)?,
             circuit_module: PyCircuitModule::new(py)?,
         })
+    }
+
+    /// Returns the current sequence of registered :class:`.Qubit` instances as a list.
+    ///
+    /// .. warning::
+    ///
+    ///     Do not modify this list yourself.  It will invalidate the :class:`DAGCircuit` data
+    ///     structures.
+    ///
+    /// Returns:
+    ///     list(:class:`.Qubit`): The current sequence of registered qubits.
+    #[getter]
+    pub fn qubits(&self, py: Python<'_>) -> Py<PyList> {
+        self.qubits.cached().clone_ref(py)
+    }
+
+    /// Returns the current sequence of registered :class:`.Clbit`
+    /// instances as a list.
+    ///
+    /// .. warning::
+    ///
+    ///     Do not modify this list yourself.  It will invalidate the :class:`DAGCircuit` data
+    ///     structures.
+    ///
+    /// Returns:
+    ///     list(:class:`.Clbit`): The current sequence of registered clbits.
+    #[getter]
+    pub fn clbits(&self, py: Python<'_>) -> Py<PyList> {
+        self.clbits.cached().clone_ref(py)
     }
 
     /// Return a list of the wires in order.
@@ -1873,13 +1904,22 @@ def _format(operand):
             }
         }
 
-        //
-        // def node_eq(node_self, node_other):
-        //     return DAGNode.semantic_eq(node_self, node_other, self_bit_indices, other_bit_indices)
-        //
-        // return rx.is_isomorphic_node_match(self._multi_graph, other._multi_graph, node_eq)
         todo!()
+        // Check for VF2 isomorphic match.
+        // self.topological_nodes()
+        // let semantic_eq = DAG_NODE.get_bound(py).getattr(intern!(py, "semantic_eq"))?;
+        // let node_match = |n1, n2| -> bool {
+        //     semantic_eq
+        //         .call1((n1, n2, self_bit_indices, other_bit_indices)).map_or(false, |r| r.extract().unwrap_or(false))
+        // };
+        // Ok(petgraph::algo::is_isomorphic_matching(
+        //     &self.dag,
+        //     &other.dag,
+        //     node_match,
+        //     |_, _| true,
+        // ))
     }
+
 
     /// Yield nodes in topological order.
     ///
