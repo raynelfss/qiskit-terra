@@ -2808,7 +2808,8 @@ def _format(operand):
     }
 
     /// Returns set of the ancestors of a node as DAGOpNodes and DAGInNodes.
-    fn ancestors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
+    #[pyo3(name="ancestors")]
+    fn py_ancestors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
         if let Some(node_index) = node.node {
             let ancestors = core_ancestors(&self.dag, node_index)
                 .filter_map(|node| self.get_node(py, node).ok());
@@ -2823,47 +2824,41 @@ def _format(operand):
     }
 
     /// Returns set of the descendants of a node as DAGOpNodes and DAGOutNodes.
-    fn descendants(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        if let Some(node_index) = node.node {
-            let descendants = core_descendants(&self.dag, node_index)
-                .filter_map(|node| self.get_node(py, node).ok());
-            let descendant_set = PySet::empty_bound(py)?;
-            for descendant in descendants {
-                descendant_set.add(descendant)?;
-            }
-            return Ok(descendant_set.unbind());
-        } else {
-            unreachable!("The provided {:?} is not properly initialized.", node)
+    #[pyo3(name="descendants")]
+    fn py_descendants(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
+        let descendants = self.descendants(node)
+            .filter_map(|node| self.get_node(py, node).ok());
+        let descendant_set = PySet::empty_bound(py)?;
+        for descendant in descendants {
+            descendant_set.add(descendant)?;
         }
+        return Ok(descendant_set.unbind());
     }
 
     /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
     /// and [DAGNode] is its successors in  BFS order.
-    fn bfs_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
+    #[pyo3(name="bfs_successors")]
+    fn py_bfs_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyList>> {
         // return iter(rx.bfs_successors(self._multi_graph, node._node_id))
-        if let Some(node_index) = node.node {
-            let descendants =
-                core_bfs_successors(&self.dag, node_index).filter_map(|(node, nodes)| {
-                    match (
-                        self.get_node(py, node).ok(),
-                        nodes
-                            .iter()
-                            .filter_map(|sub_node| self.get_node(py, *sub_node).ok())
-                            .collect::<Vec<_>>(),
-                    ) {
-                        (Some(node), nodes) => Some((node, nodes)),
-                        _ => None,
-                    }
-                });
-            let descendant_set = PySet::empty_bound(py)?;
-            for descendant in descendants {
-                descendant_set.add(descendant)?;
+        let successor_index = self.bfs_successors(node).filter_map(|(node, nodes)| {
+            match (
+                self.get_node(py, node).ok(),
+                nodes
+                    .iter()
+                    .filter_map(|sub_node| self.get_node(py, *sub_node).ok())
+                    .collect::<Vec<_>>(),
+            ) {
+                (Some(node), nodes) => Some((node, nodes)),
+                _ => None,
             }
-            return Ok(descendant_set.unbind());
-        } else {
-            unreachable!("The provided {:?} is not properly initialized.", node)
+        });
+        let successor_list = PyList::empty_bound(py);
+        for successors in successor_index {
+            successor_list.append(successors)?;
         }
+        return Ok(successor_list.unbind());
     }
+    
 
     /// Returns iterator of the successors of a node that are
     /// connected by a quantum edge as DAGOpNodes and DAGOutNodes.
@@ -3612,6 +3607,35 @@ impl DAGCircuit {
                 self.decrement_op(op_name);
             }),
             _ => panic!("Must be called with valid operation node!"),
+        }
+    }
+
+    /// Returns an iterator of the ancestors indices of a node.
+    pub fn ancestors<'a>(&'a self, node: &DAGNode) -> impl Iterator<Item = NodeIndex> + 'a {
+        if let Some(node_index) = node.node {
+            core_ancestors(&self.dag, node_index)
+        } else {
+            unreachable!("The provided {:?} is not properly initialized.", node)
+        }
+    }
+
+    /// Returns an iterator of the descendants of a node as DAGOpNodes and DAGOutNodes.
+    pub fn descendants<'a>(&'a self, node: &'a DAGNode) -> impl Iterator<Item= NodeIndex> + 'a {
+        if let Some(node_index) = node.node {
+            core_descendants(&self.dag, node_index)
+        } else {
+            unreachable!("The provided {:?} is not properly initialized.", node)
+        }
+    }
+
+    /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
+    /// and [DAGNode] is its successors in  BFS order.
+    pub fn bfs_successors<'a>(&'a self, node: &'a DAGNode) -> impl Iterator<Item = (NodeIndex, Vec<NodeIndex>)> + 'a {
+        // return iter(rx.bfs_successors(self._multi_graph, node._node_id))
+        if let Some(node_index) = node.node {
+            core_bfs_successors(&self.dag, node_index)
+        } else {
+            unreachable!("The provided {:?} is not properly initialized.", node)
         }
     }
 
