@@ -3595,18 +3595,18 @@ impl DAGCircuit {
 
     /// Returns an iterator of the ancestors indices of a node.
     pub fn ancestors<'a>(&'a self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + 'a {
-        core_ancestors(&self.dag, node)
+        core_ancestors(&self.dag, node).filter(move |next| next != &node)
     }
 
     /// Returns an iterator of the descendants of a node as DAGOpNodes and DAGOutNodes.
     pub fn descendants<'a>(&'a self, node: NodeIndex) -> impl Iterator<Item= NodeIndex> + 'a {
-        core_descendants(&self.dag, node)
+        core_descendants(&self.dag, node).filter(move |next| next != &node)
     }
 
     /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
     /// and [DAGNode] is its successors in  BFS order.
     pub fn bfs_successors<'a>(&'a self, node: NodeIndex) -> impl Iterator<Item = (NodeIndex, Vec<NodeIndex>)> + 'a {
-        core_bfs_successors(&self.dag, node)
+        core_bfs_successors(&self.dag, node).filter(move |(_, others)| !others.is_empty())
     }
 
     fn unpack_into(&self, py: Python, id: NodeIndex, weight: &NodeType) -> PyResult<Py<PyAny>> {
