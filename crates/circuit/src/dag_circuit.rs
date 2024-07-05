@@ -17,7 +17,7 @@ use crate::circuit_instruction::{
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
-use crate::imports::{DAG_NODE, VARIABLE_MAPPER};
+use crate::imports::{CONTROLLED_GATE, DAG_NODE, VARIABLE_MAPPER};
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
@@ -2421,71 +2421,33 @@ def _format(operand):
         op: &Bound<PyAny>,
         inplace: bool,
         propagate_condition: bool,
-    ) -> Py<PyAny> {
-        // if not isinstance(node, DAGOpNode):
-        //     raise DAGCircuitError("Only DAGOpNodes can be replaced.")
-        //
-        // if node.op.num_qubits != op.num_qubits or node.op.num_clbits != op.num_clbits:
-        //     raise DAGCircuitError(
-        //         "Cannot replace node of width ({} qubits, {} clbits) with "
-        //         "operation of mismatched width ({} qubits, {} clbits).".format(
-        //             node.op.num_qubits, node.op.num_clbits, op.num_qubits, op.num_clbits
-        //         )
-        //     )
-        //
-        // # This might include wires that are inherent to the node, like in its `condition` or
-        // # `target` fields, so might be wider than `node.op.num_{qu,cl}bits`.
-        // current_wires = {wire for _, _, wire in self.edges(node)}
-        // new_wires = set(node.qargs) | set(node.cargs)
-        // if (new_condition := getattr(op, "condition", None)) is not None:
-        //     new_wires.update(condition_resources(new_condition).clbits)
-        // elif isinstance(op, SwitchCaseOp):
-        //     if isinstance(op.target, Clbit):
-        //         new_wires.add(op.target)
-        //     elif isinstance(op.target, ClassicalRegister):
-        //         new_wires.update(op.target)
-        //     else:
-        //         new_wires.update(node_resources(op.target).clbits)
-        //
-        // if propagate_condition and not (
-        //     isinstance(node.op, ControlFlowOp) or isinstance(op, ControlFlowOp)
-        // ):
-        //     if new_condition is not None:
-        //         raise DAGCircuitError(
-        //             "Cannot propagate a condition to an operation that already has one."
-        //         )
-        //     if (old_condition := getattr(node.op, "condition", None)) is not None:
-        //         if not isinstance(op, Instruction):
-        //             raise DAGCircuitError("Cannot add a condition on a generic Operation.")
-        //         if not isinstance(node.op, ControlFlowOp):
-        //             op = op.c_if(*old_condition)
-        //         else:
-        //             op.condition = old_condition
-        //         new_wires.update(condition_resources(old_condition).clbits)
-        //
-        // if new_wires != current_wires:
-        //     # The new wires must be a non-strict subset of the current wires; if they add new wires,
-        //     # we'd not know where to cut the existing wire to insert the new dependency.
-        //     raise DAGCircuitError(
-        //         f"New operation '{op}' does not span the same wires as the old node '{node}'."
-        //         f" New wires: {new_wires}, old wires: {current_wires}."
-        //     )
-        //
-        // if inplace:
-        //     if op.name != node.op.name:
-        //         self._increment_op(op)
-        //         self._decrement_op(node.op)
-        //     node.op = op
-        //     return node
-        //
-        // new_node = copy.copy(node)
-        // new_node.op = op
-        // self._multi_graph[node._node_id] = new_node
-        // if op.name != node.op.name:
-        //     self._increment_op(op)
-        //     self._decrement_op(node.op)
-        // return new_node
-        todo!()
+    ) -> PyResult<Py<PyAny>> {
+        let unbound_op = op.clone().unbind();
+        let op_construct = convert_py_to_operation_type(op.py(), unbound_op.clone_ref(op.py()))?;
+        let condition = match propagate_condition
+            && !op_construct.operation.control_flow()
+            && !node.instruction.operation.control_flow()
+        {
+            true => match &node.instruction.extra_attrs {
+                Some(extra_attrs) => &extra_attrs.condition,
+                None => &None,
+            },
+            _ => &op_construct.condition,
+        };
+
+        node.instruction.replace(
+            op.py(),
+            Some(op_construct.operation.into()),
+            Some(node.instruction.qubits.clone().into_any().bind(op.py())),
+            Some(node.instruction.clbits.clone().into_any().bind(op.py())),
+            Some(op_construct.params),
+            op_construct.label,
+            op_construct.duration,
+            op_construct.unit,
+            condition.clone(),
+        );
+
+        Ok(node.into_py(op.py()))
     }
 
     /// Decompose the circuit into sets of qubits with no gates connecting them.
