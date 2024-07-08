@@ -3201,8 +3201,9 @@ def _format(operand):
             }
         }
 
-        let elements : Vec<_> = qubits_in_cone.iter().map(|&qubit| qubit.0.into_py(py)).collect();
-        Ok(PySet::new_bound(py, &elements)?.unbind())
+        let qubits_in_cone_vec: Vec<_> = qubits_in_cone.iter().map(|&&qubit| qubit).collect();
+        let elements = self.qubits.map_indices(&qubits_in_cone_vec[..]);
+        Ok(PySet::new_bound(py, elements)?.unbind())
     }
 
     /// Return a dictionary of circuit properties.
@@ -3286,7 +3287,7 @@ impl DAGCircuit {
     self.dag
         .edges_directed(node, Outgoing)
         .filter_map(|e| match e.weight() {
-            Wire::Qubit(_) => Some(e.source()),
+            Wire::Qubit(_) => Some(e.target()),
             _ => None,
         })
         .unique()
