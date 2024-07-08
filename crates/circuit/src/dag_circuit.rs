@@ -17,7 +17,7 @@ use crate::circuit_instruction::{
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
-use crate::imports::VARIABLE_MAPPER;
+use crate::imports::{DAG_NODE, VARIABLE_MAPPER};
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
@@ -44,6 +44,11 @@ use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, No
 use rustworkx_core::petgraph::visit::{IntoNodeReferences, NodeCount, NodeRef};
 use rustworkx_core::petgraph::Incoming;
 use std::collections::VecDeque;
+use rustworkx_core::traversal::{
+    ancestors as core_ancestors, bfs_successors as core_bfs_successors,
+    descendants as core_descendants,
+};
+use std::borrow::Borrow;
 use std::convert::Infallible;
 use std::f64::consts::PI;
 use std::ffi::c_double;
@@ -134,7 +139,9 @@ pub struct DAGCircuit {
 
     dag: StableDiGraph<NodeType, Wire>,
 
+    #[pyo3(get)]
     qregs: Py<PyDict>,
+    #[pyo3(get)]
     cregs: Py<PyDict>,
 
     /// The cache used to intern instruction qargs.
@@ -378,6 +385,35 @@ impl DAGCircuit {
             control_flow_module: PyControlFlowModule::new(py)?,
             circuit_module: PyCircuitModule::new(py)?,
         })
+    }
+
+    /// Returns the current sequence of registered :class:`.Qubit` instances as a list.
+    ///
+    /// .. warning::
+    ///
+    ///     Do not modify this list yourself.  It will invalidate the :class:`DAGCircuit` data
+    ///     structures.
+    ///
+    /// Returns:
+    ///     list(:class:`.Qubit`): The current sequence of registered qubits.
+    #[getter]
+    pub fn qubits(&self, py: Python<'_>) -> Py<PyList> {
+        self.qubits.cached().clone_ref(py)
+    }
+
+    /// Returns the current sequence of registered :class:`.Clbit`
+    /// instances as a list.
+    ///
+    /// .. warning::
+    ///
+    ///     Do not modify this list yourself.  It will invalidate the :class:`DAGCircuit` data
+    ///     structures.
+    ///
+    /// Returns:
+    ///     list(:class:`.Clbit`): The current sequence of registered clbits.
+    #[getter]
+    pub fn clbits(&self, py: Python<'_>) -> Py<PyList> {
+        self.clbits.cached().clone_ref(py)
     }
 
     /// Return a list of the wires in order.
@@ -1874,12 +1910,20 @@ def _format(operand):
             }
         }
 
-        //
-        // def node_eq(node_self, node_other):
-        //     return DAGNode.semantic_eq(node_self, node_other, self_bit_indices, other_bit_indices)
-        //
-        // return rx.is_isomorphic_node_match(self._multi_graph, other._multi_graph, node_eq)
         todo!()
+        // Check for VF2 isomorphic match.
+        // self.topological_nodes()
+        // let semantic_eq = DAG_NODE.get_bound(py).getattr(intern!(py, "semantic_eq"))?;
+        // let node_match = |n1, n2| -> bool {
+        //     semantic_eq
+        //         .call1((n1, n2, self_bit_indices, other_bit_indices)).map_or(false, |r| r.extract().unwrap_or(false))
+        // };
+        // Ok(petgraph::algo::is_isomorphic_matching(
+        //     &self.dag,
+        //     &other.dag,
+        //     node_match,
+        //     |_, _| true,
+        // ))
     }
 
     /// Yield nodes in topological order.
@@ -2777,22 +2821,45 @@ def _format(operand):
     }
 
     /// Returns set of the ancestors of a node as DAGOpNodes and DAGInNodes.
-    fn ancestors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return {self._multi_graph[x] for x in rx.ancestors(self._multi_graph, node._node_id)}
-        todo!()
+    #[pyo3(name = "ancestors")]
+    fn py_ancestors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
+        let ancestors: PyResult<Vec<PyObject>> = self
+            .ancestors(node.node.unwrap())
+            .map(|node| self.get_node(py, node))
+            .collect();
+        Ok(PySet::new_bound(py, &ancestors?)?.unbind())
     }
 
     /// Returns set of the descendants of a node as DAGOpNodes and DAGOutNodes.
-    fn descendants(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return {self._multi_graph[x] for x in rx.descendants(self._multi_graph, node._node_id)}
-        todo!()
+    #[pyo3(name = "descendants")]
+    fn py_descendants(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
+        let descendants: PyResult<Vec<PyObject>> = self
+            .descendants(node.node.unwrap())
+            .map(|node| self.get_node(py, node))
+            .collect();
+        Ok(PySet::new_bound(py, &descendants?)?.unbind())
     }
 
     /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
     /// and [DAGNode] is its successors in  BFS order.
-    fn bfs_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return iter(rx.bfs_successors(self._multi_graph, node._node_id))
-        todo!()
+    #[pyo3(name = "bfs_successors")]
+    fn py_bfs_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
+        let successor_index: PyResult<Vec<(PyObject, Vec<PyObject>)>> = self
+            .bfs_successors(node.node.unwrap())
+            .map(|(node, nodes)| -> PyResult<(PyObject, Vec<PyObject>)> {
+                Ok((
+                    self.get_node(py, node)?,
+                    nodes
+                        .iter()
+                        .map(|sub_node| self.get_node(py, *sub_node))
+                        .collect::<PyResult<Vec<_>>>()?,
+                ))
+            })
+            .collect();
+        Ok(PyList::new_bound(py, successor_index?)
+            .into_any()
+            .iter()?
+            .unbind())
     }
 
     /// Returns iterator of the successors of a node that are
@@ -3583,6 +3650,25 @@ impl DAGCircuit {
             }),
             _ => panic!("Must be called with valid operation node!"),
         }
+    }
+
+    /// Returns an iterator of the ancestors indices of a node.
+    pub fn ancestors<'a>(&'a self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + 'a {
+        core_ancestors(&self.dag, node).filter(move |next| next != &node)
+    }
+
+    /// Returns an iterator of the descendants of a node as DAGOpNodes and DAGOutNodes.
+    pub fn descendants<'a>(&'a self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + 'a {
+        core_descendants(&self.dag, node).filter(move |next| next != &node)
+    }
+
+    /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
+    /// and [DAGNode] is its successors in  BFS order.
+    pub fn bfs_successors<'a>(
+        &'a self,
+        node: NodeIndex,
+    ) -> impl Iterator<Item = (NodeIndex, Vec<NodeIndex>)> + 'a {
+        core_bfs_successors(&self.dag, node).filter(move |(_, others)| !others.is_empty())
     }
 
     fn unpack_into(&self, py: Python, id: NodeIndex, weight: &NodeType) -> PyResult<Py<PyAny>> {

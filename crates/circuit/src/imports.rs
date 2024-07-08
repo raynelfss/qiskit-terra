@@ -74,6 +74,8 @@ pub static SINGLETON_CONTROLLED_GATE: ImportOnceCell =
 pub static VARIABLE_MAPPER: ImportOnceCell =
     ImportOnceCell::new("qiskit.circuit._classical_resource_map", "VariableMapper");
 
+pub static DAG_NODE: ImportOnceCell = ImportOnceCell::new("qiskit.dagcircuit", "DAGNode");
+
 /// A mapping from the enum variant in crate::operations::StandardGate to the python
 /// module path and class name to import it. This is used to populate the conversion table
 /// when a gate is added directly via the StandardGate path and there isn't a Python object

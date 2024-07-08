@@ -25,6 +25,7 @@ mod interner;
 
 use pyo3::prelude::*;
 use pyo3::types::{PySequence, PySlice, PyTuple};
+use pyo3::DowncastError;
 use std::ops::Deref;
 
 /// A private enumeration type used to extract arguments to pymethod
@@ -49,9 +50,16 @@ pub struct TupleLikeArg<'py> {
 
 impl<'py> FromPyObject<'py> for TupleLikeArg<'py> {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        Ok(TupleLikeArg {
-            value: ob.downcast::<PySequence>()?.to_tuple()?,
-        })
+        let value = match ob.downcast::<PySequence>() {
+            Ok(seq) => seq.to_tuple()?,
+            Err(_) => PyTuple::new_bound(
+                ob.py(),
+                ob.iter()?
+                    .map(|o| Ok(o?.unbind()))
+                    .collect::<PyResult<Vec<PyObject>>>()?,
+            ),
+        };
+        Ok(TupleLikeArg { value })
     }
 }
 
