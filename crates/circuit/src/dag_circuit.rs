@@ -10,7 +10,6 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
-use std::collections::VecDeque;
 use crate::bit_data::BitData;
 use crate::circuit_instruction::PackedInstruction;
 use crate::circuit_instruction::{
@@ -44,6 +43,7 @@ use rustworkx_core::petgraph::prelude::StableDiGraph;
 use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, NodeIndex};
 use rustworkx_core::petgraph::visit::{IntoNodeReferences, NodeCount, NodeRef};
 use rustworkx_core::petgraph::Incoming;
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::f64::consts::PI;
 use std::ffi::c_double;
@@ -3190,9 +3190,12 @@ def _format(operand):
                         if let NodeType::Operation(pred_packed) =
                             self.dag.node_weight(pred_index).unwrap()
                         {
-                            if !qubits_in_cone.is_disjoint(&HashSet::<&Qubit>::from_iter(
-                                self.qargs_cache.intern(pred_packed.qubits_id).iter(),
-                            )) {
+                            if self
+                                .qargs_cache
+                                .intern(pred_packed.qubits_id)
+                                .iter()
+                                .any(|x| qubits_in_cone.contains(x))
+                            {
                                 queue.push_back(pred_index);
                             }
                         }
@@ -3284,14 +3287,14 @@ impl DAGCircuit {
     }
 
     fn quantum_successors(&self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
-    self.dag
-        .edges_directed(node, Outgoing)
-        .filter_map(|e| match e.weight() {
-            Wire::Qubit(_) => Some(e.target()),
-            _ => None,
-        })
-        .unique()
-}
+        self.dag
+            .edges_directed(node, Outgoing)
+            .filter_map(|e| match e.weight() {
+                Wire::Qubit(_) => Some(e.target()),
+                _ => None,
+            })
+            .unique()
+    }
 
     fn topological_nodes(&self) -> PyResult<impl Iterator<Item = NodeIndex>> {
         let key = |node: NodeIndex| -> Result<(Option<Index>, Option<Index>), Infallible> {
