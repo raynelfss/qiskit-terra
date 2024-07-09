@@ -341,7 +341,7 @@ impl Target {
         &mut self,
         instruction: TargetOperation,
         name: &str,
-        mut properties: Option<PropsMap>,
+        properties: Option<PropsMap>,
     ) -> PyResult<()> {
         if self.gate_map.contains_key(name) {
             return Err(PyAttributeError::new_err(format!(
@@ -357,7 +357,7 @@ impl Target {
                 self.variable_class_operations.insert(name.to_string());
             }
             TargetOperation::Normal(_) => {
-                if let Some(properties) = properties.as_mut() {
+                if let Some(mut properties) = properties {
                     qargs_val = PropsMap::with_capacity(properties.len());
                     let inst_num_qubits = instruction.num_qubits();
                     if properties.contains_key(None) {
@@ -392,22 +392,12 @@ impl Target {
                         }
                         let inst_properties = properties.swap_remove(qarg.as_ref()).unwrap();
                         qargs_val.insert(qarg.clone(), inst_properties);
-                        if let Some(value) = self.qarg_gate_map.get_mut(qarg.as_ref()) {
-                            if let Some(value) = value {
-                                value.insert(name.to_string());
-                            }
+                        if let Some(Some(value)) = self.qarg_gate_map.get_mut(qarg.as_ref()) {
+                            value.insert(name.to_string());
                         } else {
                             self.qarg_gate_map
                                 .insert(qarg, Some(HashSet::from_iter([name.to_string()])));
                         }
-                        // self.qarg_gate_map
-                        //     .entry(qarg)
-                        //     .and_modify(|e| {
-                        //         if let Some(e) = e {
-                        //             e.insert(name.to_string());
-                        //         }
-                        //     })
-                        //     .or_insert(Some(HashSet::from_iter([name.to_string()])));
                     }
                 } else {
                     qargs_val = PropsMap::with_capacity(0);
@@ -450,12 +440,9 @@ impl Target {
                 &instruction
             )));
         }
-        prop_map
-            .get_mut(qargs.as_ref())
-            .map(|e| {
-                *e = properties;
-                
-            });
+        if let Some(e) = prop_map.get_mut(qargs.as_ref()) {
+            *e = properties;
+        }
         self.gate_map
             .entry(instruction)
             .and_modify(|e| *e = prop_map);

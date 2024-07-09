@@ -1,3 +1,15 @@
+// This code is part of Qiskit.
+//
+// (C) Copyright IBM 2024
+//
+// This code is licensed under the Apache License, Version 2.0. You may
+// obtain a copy of this license in the LICENSE.txt file in the root directory
+// of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+//
+// Any modifications or derivative works of this code must retain this
+// copyright notice, and modified files need to carry a notice indicating
+// that they have been altered from the originals.
+
 use ahash::RandomState;
 use indexmap::{
     map::{IntoIter as BaseIntoIter, Iter as BaseIter, Keys as BaseKeys, Values as BaseValues},
@@ -15,8 +27,8 @@ type BaseMap<K, V> = IndexMap<K, V, RandomState>;
 #[derive(Debug, Clone)]
 pub struct NullableIndexMap<K, V>
 where
-    K: IntoPy<PyObject> + Eq + Hash,
-    V: IntoPy<PyObject>,
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     map: BaseMap<K, V>,
     null_val: Option<V>,
@@ -24,8 +36,8 @@ where
 
 impl<K, V> NullableIndexMap<K, V>
 where
-    K: IntoPy<PyObject> + Eq + Hash,
-    V: IntoPy<PyObject>,
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     pub fn get(&self, key: Option<&K>) -> Option<&V> {
         match key {
@@ -137,8 +149,8 @@ where
 
 impl<K, V> IntoIterator for NullableIndexMap<K, V>
 where
-    K: IntoPy<PyObject> + Eq + Hash,
-    V: IntoPy<PyObject>,
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     type Item = (Option<K>, V);
     type IntoIter = IntoIter<K, V>;
@@ -188,12 +200,18 @@ impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> {
     }
 }
 
-pub struct IntoIter<K, V> {
+pub struct IntoIter<K, V>
+where
+    V: Clone,
+{
     map: BaseIntoIter<K, V>,
     null_value: Option<V>,
 }
 
-impl<K, V> Iterator for IntoIter<K, V> {
+impl<K, V> Iterator for IntoIter<K, V>
+where
+    V: Clone,
+{
     type Item = (Option<K>, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -219,7 +237,10 @@ impl<K, V> Iterator for IntoIter<K, V> {
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for IntoIter<K, V> {
+impl<K, V> ExactSizeIterator for IntoIter<K, V>
+where
+    V: Clone,
+{
     fn len(&self) -> usize {
         self.map.len() + self.null_value.is_some() as usize
     }
@@ -237,6 +258,7 @@ impl<'a, K, V> Iterator for Keys<'a, K, V> {
         if let Some(key) = self.map_keys.next() {
             Some(Some(key))
         } else if self.null_value {
+            self.null_value = false;
             Some(None)
         } else {
             None
@@ -271,8 +293,10 @@ impl<'a, K, V> Iterator for Values<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(value) = self.map_values.next() {
             Some(value)
-        } else if let Some(value) = self.null_value {
-            Some(value)
+        } else if self.null_value.is_some() {
+            let return_value = self.null_value;
+            self.null_value = &None;
+            return_value.as_ref()
         } else {
             None
         }
@@ -297,8 +321,8 @@ impl<'a, K, V> ExactSizeIterator for Values<'a, K, V> {
 
 impl<K, V> Index<Option<&K>> for NullableIndexMap<K, V>
 where
-    K: IntoPy<PyObject> + Eq + Hash,
-    V: IntoPy<PyObject>,
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     type Output = V;
     fn index(&self, index: Option<&K>) -> &Self::Output {
@@ -314,8 +338,8 @@ where
 
 impl<K, V> Default for NullableIndexMap<K, V>
 where
-    K: IntoPy<PyObject> + Eq + Hash,
-    V: IntoPy<PyObject>,
+    K: Eq + Hash + Clone,
+    V: Clone,
 {
     fn default() -> Self {
         Self {
@@ -327,17 +351,17 @@ where
 
 impl<'py, K, V> FromPyObject<'py> for NullableIndexMap<K, V>
 where
-    K: IntoPy<PyObject> + FromPyObject<'py> + Eq + Hash,
-    V: IntoPy<PyObject> + FromPyObject<'py>,
+    K: IntoPy<PyObject> + FromPyObject<'py> + Eq + Hash + Clone,
+    V: IntoPy<PyObject> + FromPyObject<'py> + Clone,
 {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         let as_dict: &Bound<PyDict> = ob.downcast()?;
-        let null_val: Option<V> = match as_dict
-            .get_item(ob.py().None())?
-            .map(|item| item.extract::<V>())
-        {
-            Some(value) => Some(value?),
-            None => None,
+        let null_val: Option<V> = if as_dict.contains(ob.py().None())? {
+            let val = Some(as_dict.get_item(ob.py().None())?.unwrap().extract()?);
+            as_dict.del_item(ob.py().None())?;
+            val
+        } else {
+            None
         };
         let map: IndexMap<K, V, RandomState> = as_dict.extract()?;
         Ok(Self { map, null_val })
@@ -346,15 +370,36 @@ where
 
 impl<K, V> IntoPy<PyObject> for NullableIndexMap<K, V>
 where
-    K: IntoPy<PyObject> + Eq + Hash,
-    V: IntoPy<PyObject>,
+    K: IntoPy<PyObject> + Eq + Hash + Clone,
+    V: IntoPy<PyObject> + Clone,
 {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let map_object = self.map.into_py(py);
-        let downcast_dict = map_object.downcast_bound::<PyDict>(py).unwrap();
-        downcast_dict
-            .set_item(py.None(), self.null_val.into_py(py))
-            .unwrap();
-        downcast_dict.to_object(py)
+        let bound_map_obj = map_object.bind(py);
+        let downcast_dict: &Bound<PyDict> = bound_map_obj.downcast().unwrap();
+        if let Some(null_val) = self.null_val {
+            downcast_dict
+                .set_item(py.None(), null_val.into_py(py))
+                .unwrap();
+        }
+        map_object
+    }
+}
+
+impl<K, V> ToPyObject for NullableIndexMap<K, V>
+where
+    K: ToPyObject + Eq + Hash + Clone,
+    V: ToPyObject + Clone,
+{
+    fn to_object(&self, py: Python<'_>) -> PyObject {
+        let map_object = self.map.to_object(py);
+        let bound_map_obj = map_object.bind(py);
+        let downcast_dict: &Bound<PyDict> = bound_map_obj.downcast().unwrap();
+        if let Some(null_val) = &self.null_val {
+            downcast_dict
+                .set_item(py.None(), null_val.to_object(py))
+                .unwrap();
+        }
+        map_object
     }
 }
