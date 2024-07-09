@@ -44,6 +44,12 @@ use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, No
 use rustworkx_core::petgraph::visit::{IntoNodeReferences, NodeCount, NodeRef};
 use rustworkx_core::petgraph::Incoming;
 use rustworkx_core::dag_algo::layers;
+use std::collections::VecDeque;
+use rustworkx_core::traversal::{
+    ancestors as core_ancestors, bfs_successors as core_bfs_successors,
+    descendants as core_descendants,
+};
+use std::borrow::Borrow;
 use std::convert::Infallible;
 use std::f64::consts::PI;
 use std::ffi::c_double;
@@ -1921,7 +1927,6 @@ def _format(operand):
         // ))
     }
 
-
     /// Yield nodes in topological order.
     ///
     /// Args:
@@ -2771,15 +2776,28 @@ def _format(operand):
 
     /// Returns iterator of the predecessors of a node that are
     /// connected by a quantum edge as DAGOpNodes and DAGInNodes.
-    fn quantum_predecessors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
-        let edges = self.dag.edges_directed(node.node.unwrap(), Incoming);
-        let filtered = edges.filter_map(|e| match e.weight() {
-            Wire::Qubit(_) => Some(e.source()),
-            _ => None,
-        });
-        let predecessors: PyResult<Vec<_>> =
-            filtered.unique().map(|i| self.get_node(py, i)).collect();
+    #[pyo3(name = "quantum_predecessors")]
+    fn py_quantum_predecessors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
+        let predecessors: PyResult<Vec<_>> = self
+            .quantum_predecessors(node.node.unwrap())
+            .map(|i| self.get_node(py, i))
+            .collect();
         Ok(PyTuple::new_bound(py, predecessors?)
+            .into_any()
+            .iter()
+            .unwrap()
+            .unbind())
+    }
+
+    /// Returns iterator of the successors of a node that are
+    /// connected by a quantum edge as DAGOpNodes and DAGOutNodes.
+    #[pyo3(name = "quantum_successors")]
+    fn py_quantum_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
+        let successors: PyResult<Vec<_>> = self
+            .quantum_successors(node.node.unwrap())
+            .map(|i| self.get_node(py, i))
+            .collect();
+        Ok(PyTuple::new_bound(py, successors?)
             .into_any()
             .iter()
             .unwrap()
@@ -2804,38 +2822,44 @@ def _format(operand):
     }
 
     /// Returns set of the ancestors of a node as DAGOpNodes and DAGInNodes.
-    fn ancestors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return {self._multi_graph[x] for x in rx.ancestors(self._multi_graph, node._node_id)}
-        todo!()
+    #[pyo3(name = "ancestors")]
+    fn py_ancestors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
+        let ancestors: PyResult<Vec<PyObject>> = self
+            .ancestors(node.node.unwrap())
+            .map(|node| self.get_node(py, node))
+            .collect();
+        Ok(PySet::new_bound(py, &ancestors?)?.unbind())
     }
 
     /// Returns set of the descendants of a node as DAGOpNodes and DAGOutNodes.
-    fn descendants(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return {self._multi_graph[x] for x in rx.descendants(self._multi_graph, node._node_id)}
-        todo!()
+    #[pyo3(name = "descendants")]
+    fn py_descendants(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
+        let descendants: PyResult<Vec<PyObject>> = self
+            .descendants(node.node.unwrap())
+            .map(|node| self.get_node(py, node))
+            .collect();
+        Ok(PySet::new_bound(py, &descendants?)?.unbind())
     }
 
     /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
     /// and [DAGNode] is its successors in  BFS order.
-    fn bfs_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PySet>> {
-        // return iter(rx.bfs_successors(self._multi_graph, node._node_id))
-        todo!()
-    }
-
-    /// Returns iterator of the successors of a node that are
-    /// connected by a quantum edge as DAGOpNodes and DAGOutNodes.
-    fn quantum_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
-        let edges = self.dag.edges_directed(node.node.unwrap(), Outgoing);
-        let filtered = edges.filter_map(|e| match e.weight() {
-            Wire::Qubit(_) => Some(e.target()),
-            _ => None,
-        });
-        let predecessors: PyResult<Vec<_>> =
-            filtered.unique().map(|i| self.get_node(py, i)).collect();
-        Ok(PyTuple::new_bound(py, predecessors?)
+    #[pyo3(name = "bfs_successors")]
+    fn py_bfs_successors(&self, py: Python, node: &DAGNode) -> PyResult<Py<PyIterator>> {
+        let successor_index: PyResult<Vec<(PyObject, Vec<PyObject>)>> = self
+            .bfs_successors(node.node.unwrap())
+            .map(|(node, nodes)| -> PyResult<(PyObject, Vec<PyObject>)> {
+                Ok((
+                    self.get_node(py, node)?,
+                    nodes
+                        .iter()
+                        .map(|sub_node| self.get_node(py, *sub_node))
+                        .collect::<PyResult<Vec<_>>>()?,
+                ))
+            })
+            .collect();
+        Ok(PyList::new_bound(py, successor_index?)
             .into_any()
-            .iter()
-            .unwrap()
+            .iter()?
             .unbind())
     }
 
@@ -3226,42 +3250,79 @@ def _format(operand):
     ///
     /// Returns:
     ///     Set[~qiskit.circuit.Qubit]: The set of qubits whose interactions affect ``qubit``.
-    fn quantum_causal_cone(&self, qubit: &Bound<PyAny>) -> PyResult<Py<PyAny>> {
-        // # Retrieve the output node from the qubit
-        // output_node = self.output_map.get(qubit, None)
-        // if not output_node:
-        //     raise DAGCircuitError(f"Qubit {qubit} is not part of this circuit.")
-        // # Add the qubit to the causal cone.
-        // qubits_to_check = {qubit}
-        // # Add predecessors of output node to the queue.
-        // queue = deque(self.predecessors(output_node))
-        //
-        // # While queue isn't empty
-        // while queue:
-        //     # Pop first element.
-        //     node_to_check = queue.popleft()
-        //     # Check whether element is input or output node.
-        //     if isinstance(node_to_check, DAGOpNode):
-        //         # Keep all the qubits in the operation inside a set.
-        //         qubit_set = set(node_to_check.qargs)
-        //         # Check if there are any qubits in common and that the operation is not a barrier.
-        //         if (
-        //             len(qubit_set.intersection(qubits_to_check)) > 0
-        //             and node_to_check.op.name != "barrier"
-        //             and not getattr(node_to_check.op, "_directive")
-        //         ):
-        //             # If so, add all the qubits to the causal cone.
-        //             qubits_to_check = qubits_to_check.union(qubit_set)
-        //     # For each predecessor of the current node, filter input/output nodes,
-        //     # also make sure it has at least one qubit in common. Then append.
-        //     for node in self.quantum_predecessors(node_to_check):
-        //         if (
-        //             isinstance(node, DAGOpNode)
-        //             and len(qubits_to_check.intersection(set(node.qargs))) > 0
-        //         ):
-        //             queue.append(node)
-        // return qubits_to_check
-        todo!()
+    fn quantum_causal_cone(&self, py: Python, qubit: &Bound<PyAny>) -> PyResult<Py<PySet>> {
+        // Retrieve the output node from the qubit
+        let output_qubit = self.qubits.find(qubit).ok_or_else(|| {
+            DAGCircuitError::new_err(format!(
+                "The given qubit {:?} is not present in the circuit",
+                qubit
+            ))
+        })?;
+        let output_node_index = self.qubit_output_map.get(&output_qubit).ok_or_else(|| {
+            DAGCircuitError::new_err(format!(
+                "The given qubit {:?} is not present in qubit_output_map",
+                qubit
+            ))
+        })?;
+
+        let mut qubits_in_cone: HashSet<&Qubit> = HashSet::from([&output_qubit]);
+        let mut queue: VecDeque<NodeIndex> =
+            self.quantum_predecessors(*output_node_index).collect();
+
+        // The processed_non_directive_nodes stores the set of processed non-directive nodes.
+        // This is an optimization to avoid considering the same non-directive node multiple
+        // times when reached from different paths.
+        // The directive nodes (such as barriers or measures) are trickier since when processing
+        // them we only add their predecessors that intersect qubits_in_cone. Hence, directive
+        // nodes have to be considered multiple times.
+        let mut processed_non_directive_nodes: HashSet<NodeIndex> = HashSet::new();
+
+        while !queue.is_empty() {
+            let cur_index = queue.pop_front().unwrap();
+
+            if let NodeType::Operation(packed) = self.dag.node_weight(cur_index).unwrap() {
+                if !packed.op.directive() {
+                    // If the operation is not a directive (in particular not a barrier nor a measure),
+                    // we do not do anything if it was already processed. Otherwise, we add its qubits
+                    // to qubits_in_cone, and append its predecessors to queue.
+                    if processed_non_directive_nodes.contains(&cur_index) {
+                        continue;
+                    }
+                    qubits_in_cone.extend(self.qargs_cache.intern(packed.qubits_id).iter());
+                    processed_non_directive_nodes.insert(cur_index);
+
+                    for pred_index in self.quantum_predecessors(cur_index) {
+                        if let NodeType::Operation(pred_packed) =
+                            self.dag.node_weight(pred_index).unwrap()
+                        {
+                            queue.push_back(pred_index);
+                        }
+                    }
+                } else {
+                    // Directives (such as barriers and measures) may be defined over all the qubits,
+                    // yet not all of these qubits should be considered in the causal cone. So we
+                    // only add those predecessors that have qubits in common with qubits_in_cone.
+                    for pred_index in self.quantum_predecessors(cur_index) {
+                        if let NodeType::Operation(pred_packed) =
+                            self.dag.node_weight(pred_index).unwrap()
+                        {
+                            if self
+                                .qargs_cache
+                                .intern(pred_packed.qubits_id)
+                                .iter()
+                                .any(|x| qubits_in_cone.contains(x))
+                            {
+                                queue.push_back(pred_index);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let qubits_in_cone_vec: Vec<_> = qubits_in_cone.iter().map(|&&qubit| qubit).collect();
+        let elements = self.qubits.map_indices(&qubits_in_cone_vec[..]);
+        Ok(PySet::new_bound(py, elements)?.unbind())
     }
 
     /// Return a dictionary of circuit properties.
@@ -3329,6 +3390,26 @@ impl DAGCircuit {
             }
             _ => panic!("Cannot decrement something not added!"),
         }
+    }
+
+    fn quantum_predecessors(&self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.dag
+            .edges_directed(node, Incoming)
+            .filter_map(|e| match e.weight() {
+                Wire::Qubit(_) => Some(e.source()),
+                _ => None,
+            })
+            .unique()
+    }
+
+    fn quantum_successors(&self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.dag
+            .edges_directed(node, Outgoing)
+            .filter_map(|e| match e.weight() {
+                Wire::Qubit(_) => Some(e.target()),
+                _ => None,
+            })
+            .unique()
     }
 
     fn topological_nodes(&self) -> PyResult<impl Iterator<Item = NodeIndex>> {
@@ -3618,6 +3699,25 @@ impl DAGCircuit {
             }),
             _ => panic!("Must be called with valid operation node!"),
         }
+    }
+
+    /// Returns an iterator of the ancestors indices of a node.
+    pub fn ancestors<'a>(&'a self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + 'a {
+        core_ancestors(&self.dag, node).filter(move |next| next != &node)
+    }
+
+    /// Returns an iterator of the descendants of a node as DAGOpNodes and DAGOutNodes.
+    pub fn descendants<'a>(&'a self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + 'a {
+        core_descendants(&self.dag, node).filter(move |next| next != &node)
+    }
+
+    /// Returns an iterator of tuples of (DAGNode, [DAGNodes]) where the DAGNode is the current node
+    /// and [DAGNode] is its successors in  BFS order.
+    pub fn bfs_successors<'a>(
+        &'a self,
+        node: NodeIndex,
+    ) -> impl Iterator<Item = (NodeIndex, Vec<NodeIndex>)> + 'a {
+        core_bfs_successors(&self.dag, node).filter(move |(_, others)| !others.is_empty())
     }
 
     fn unpack_into(&self, py: Python, id: NodeIndex, weight: &NodeType) -> PyResult<Py<PyAny>> {
