@@ -13,11 +13,12 @@
 use crate::bit_data::BitData;
 use crate::circuit_instruction::PackedInstruction;
 use crate::circuit_instruction::{
-    convert_py_to_operation_type, CircuitInstruction, OperationTypeConstruct,
+    convert_py_to_operation_type, operation_type_to_py, CircuitInstruction,
+    ExtraInstructionAttributes, OperationTypeConstruct,
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
-use crate::imports::{CONTROLLED_GATE, DAG_NODE, VARIABLE_MAPPER};
+use crate::imports::{DAG_NODE, VARIABLE_MAPPER};
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
@@ -756,7 +757,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a clbit is not a :obj:`.Clbit`, is not in the circuit,
     ///         or is not idle.
-    #[pyo3(signature = (*clbits))]
+    #[pyo3(signature = (* clbits))]
     fn remove_clbits(&mut self, py: Python, clbits: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_bits = Vec::new();
         for bit in clbits.iter() {
@@ -827,7 +828,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a creg is not a ClassicalRegister, or is not in
     ///     the circuit.
-    #[pyo3(signature = (*cregs))]
+    #[pyo3(signature = (* cregs))]
     fn remove_cregs(&mut self, py: Python, cregs: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_regs = Vec::new();
         let mut unknown_regs = Vec::new();
@@ -885,7 +886,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a qubit is not a :obj:`~.circuit.Qubit`, is not in the circuit,
     ///         or is not idle.
-    #[pyo3(signature = (*qubits))]
+    #[pyo3(signature = (* qubits))]
     fn remove_qubits(&mut self, py: Python, qubits: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_bits = Vec::new();
         for bit in qubits.iter() {
@@ -956,7 +957,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a qreg is not a QuantumRegister, or is not in
     ///     the circuit.
-    #[pyo3(signature = (*qregs))]
+    #[pyo3(signature = (* qregs))]
     fn remove_qregs(&mut self, py: Python, qregs: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_regs = Vec::new();
         let mut unknown_regs = Vec::new();
@@ -1092,7 +1093,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if a leaf node is connected to multiple outputs
-    #[pyo3(signature = (op, qargs=None, cargs=None, *, check=true))]
+    #[pyo3(signature = (op, qargs = None, cargs = None, *, check = true))]
     fn apply_operation_back(
         &mut self,
         py: Python,
@@ -1217,7 +1218,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if initial nodes connected to multiple out edges
-    #[pyo3(signature = (op, qargs=None, cargs=None, *, check=true))]
+    #[pyo3(signature = (op, qargs = None, cargs = None, *, check = true))]
     fn apply_operation_front(
         &mut self,
         py: Python,
@@ -1345,7 +1346,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if ``other`` is wider or there are duplicate edge mappings.
-    #[pyo3(signature = (other, qubits=None, clbits=None, front=false, inplace=true))]
+    #[pyo3(signature = (other, qubits = None, clbits = None, front = false, inplace = true))]
     fn compose(
         slf: PyRefMut<Self>,
         py: Python,
@@ -1652,7 +1653,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: if an unknown :class:`.ControlFlowOp` is present in a call with
     ///         ``recurse=True``, or any control flow is present in a non-recursive call.
-    #[pyo3(signature= (*, recurse=false))]
+    #[pyo3(signature = (*, recurse = false))]
     fn size(&self, py: Python, recurse: bool) -> PyResult<usize> {
         let length = self.dag.node_count() - self.width() * 2;
         if !recurse {
@@ -1724,7 +1725,7 @@ def _format(operand):
     ///     DAGCircuitError: if not a directed acyclic graph
     ///     DAGCircuitError: if unknown control flow is present in a recursive call, or any control
     ///         flow is present in a non-recursive call.
-    #[pyo3(signature= (*, recurse=false))]
+    #[pyo3(signature = (*, recurse = false))]
     fn depth(&self, recurse: bool) -> PyResult<usize> {
         // if recurse:
         //     from qiskit.converters import circuit_to_dag  # pylint: disable=cyclic-import
@@ -2027,7 +2028,7 @@ def _format(operand):
     ///
     /// Returns:
     ///     DAGOpNode: The op node that replaces the block.
-    #[pyo3(signature = (node_block, op, wire_pos_map, cycle_check=true))]
+    #[pyo3(signature = (node_block, op, wire_pos_map, cycle_check = true))]
     fn replace_block_with_op(
         &mut self,
         py: Python,
@@ -2196,7 +2197,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if met with unexpected predecessor/successors
-    #[pyo3(signature = (node, input_dag, wires=None, propagate_condition=true))]
+    #[pyo3(signature = (node, input_dag, wires = None, propagate_condition = true))]
     fn substitute_node_with_dag(
         &mut self,
         node: &Bound<PyAny>,
@@ -2391,7 +2392,7 @@ def _format(operand):
         todo!()
     }
 
-    /// Replace an DAGOpNode with a single operation. qargs, cargs and
+    /// Replace a DAGOpNode with a single operation. qargs, cargs and
     /// conditions for the new operation will be inferred from the node to be
     /// replaced. The new operation will be checked to match the shape of the
     /// replaced operation.
@@ -2414,7 +2415,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: If replacement operation was incompatible with
     ///     location of target node.
-    #[pyo3(signature = (node, op, inplace=false, propagate_condition=true))]
+    #[pyo3(signature = (node, op, inplace = false, propagate_condition = true))]
     fn substitute_node(
         &mut self,
         node: PyRefMut<DAGOpNode>,
@@ -2422,32 +2423,84 @@ def _format(operand):
         inplace: bool,
         propagate_condition: bool,
     ) -> PyResult<Py<PyAny>> {
-        let unbound_op = op.clone().unbind();
-        let op_construct = convert_py_to_operation_type(op.py(), unbound_op.clone_ref(op.py()))?;
-        let condition = match propagate_condition
-            && !op_construct.operation.control_flow()
+        let py = op.py();
+        let new_op = convert_py_to_operation_type(py, op.clone().unbind())?;
+        // if either node is a control-flow operation, propagate_condition is ignored
+        let new_condition = match propagate_condition
+            && !new_op.operation.control_flow()
             && !node.instruction.operation.control_flow()
         {
-            true => match &node.instruction.extra_attrs {
-                Some(extra_attrs) => &extra_attrs.condition,
-                None => &None,
-            },
-            _ => &op_construct.condition,
+            true => {
+                // if new_op has a condition, the condition can't be propagated from the old node
+                if new_op.condition.is_some() {
+                    return Err(DAGCircuitError::new_err(
+                        "Cannot propagate a condition to an operation that already has one.",
+                    ));
+                } else {
+                    match &node.instruction.extra_attrs {
+                        Some(extra_attrs) => &extra_attrs.condition,
+                        None => &None,
+                    }
+                }
+            }
+            // if propagate_condition is false or ignored, the new_op condition (if any) will be used
+            false => &new_op.condition,
         };
+        let old_id = node.as_ref().node.unwrap();
+        let dag_binding = self.dag.clone();
+        let old_weight = dag_binding.node_weight(old_id);
+        match old_weight {
+            Some(NodeType::Operation(old_packed)) => {
+                let new_weight = NodeType::Operation(PackedInstruction::new(
+                    new_op.operation,
+                    old_packed.qubits_id,
+                    old_packed.clbits_id,
+                    new_op.params,
+                    new_op.label,
+                    new_op.duration,
+                    new_op.unit,
+                    new_condition.clone(),
+                    #[cfg(feature = "cache_pygates")]
+                    Some(op.unbind()),
+                ));
+                // using self.dag.contract_nodes to replace a single node. Is there a better method
+                // to do it?
+                let new_node = self
+                    .dag
+                    .contract_nodes(Some(old_id).into_iter(), new_weight.clone(), false)
+                    .unwrap();
+                let new_name = match &new_weight {
+                    NodeType::Operation(new_packed) => new_packed.op.name(),
+                    _ => unreachable!(),
+                };
+                self.decrement_op(old_packed.op.name().to_string());
+                self.increment_op(new_name.to_string());
 
-        node.instruction.replace(
-            op.py(),
-            Some(op_construct.operation.into()),
-            Some(node.instruction.qubits.clone().into_any().bind(op.py())),
-            Some(node.instruction.clbits.clone().into_any().bind(op.py())),
-            Some(op_construct.params),
-            op_construct.label,
-            op_construct.duration,
-            op_construct.unit,
-            condition.clone(),
-        );
-
-        Ok(node.into_py(op.py()))
+                if !inplace {
+                    Ok(self.get_node(py, new_node)?)
+                } else {
+                    let new_op = convert_py_to_operation_type(py, op.clone().unbind())?;
+                    Ok(operation_type_to_py(
+                        py,
+                        &node.instruction.replace(
+                            py,
+                            Some(new_op.operation.into()),
+                            Some(node.instruction.qubits.clone().into_any().bind(py)),
+                            Some(node.instruction.clbits.clone().into_any().bind(py)),
+                            Some(new_op.params),
+                            new_op.label,
+                            new_op.duration,
+                            new_op.unit,
+                            new_condition.clone(),
+                        )?,
+                    )?)
+                }
+            }
+            Some(_) => Err(DAGCircuitError::new_err(
+                "'node' must be of type 'DAGOpNode'.",
+            )),
+            None => Err(DAGCircuitError::new_err("'node' not found in DAG.")),
+        }
     }
 
     /// Decompose the circuit into sets of qubits with no gates connecting them.
@@ -2464,7 +2517,7 @@ def _format(operand):
     /// Each :class:`~.DAGCircuit` instance returned by this method will contain the same number of
     /// clbits as ``self``. The global phase information in ``self`` will not be maintained
     /// in the subcircuits returned by this method.
-    #[pyo3(signature = (remove_idle_qubits=false))]
+    #[pyo3(signature = (remove_idle_qubits = false))]
     fn separable_circuits(&self, remove_idle_qubits: bool) -> Py<PyList> {
         // connected_components = rx.weakly_connected_components(self._multi_graph)
         //
@@ -2594,7 +2647,7 @@ def _format(operand):
     ///
     /// Returns:
     ///     list[DAGOpNode]: the list of node ids containing the given op.
-    #[pyo3(signature=(op=None, include_directives=true))]
+    #[pyo3(signature = (op = None, include_directives = true))]
     fn op_nodes(
         &self,
         py: Python,
@@ -3075,7 +3128,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if the given wire doesn't exist in the DAG
-    #[pyo3(name = "nodes_on_wire", signature = (wire, only_ops=false))]
+    #[pyo3(name = "nodes_on_wire", signature = (wire, only_ops = false))]
     fn py_nodes_on_wire(
         &self,
         py: Python,
@@ -3114,7 +3167,7 @@ def _format(operand):
     ///
     /// Returns:
     ///     Mapping[str, int]: a mapping of operation names to the number of times it appears.
-    #[pyo3(signature = (*, recurse=true))]
+    #[pyo3(signature = (*, recurse = true))]
     fn count_ops(&self, recurse: bool) -> PyResult<usize> {
         // if not recurse or not CONTROL_FLOW_OP_NAMES.intersection(self._op_names):
         //     return self._op_names.copy()
@@ -3237,7 +3290,7 @@ def _format(operand):
     /// Returns:
     ///     Ipython.display.Image: if in Jupyter notebook and not saving to file,
     ///     otherwise None.
-    #[pyo3(signature=(scale=0.7, filename=None, style="color"))]
+    #[pyo3(signature = (scale = 0.7, filename = None, style = "color"))]
     fn draw(&self, scale: f64, filename: Option<&str>, style: &str) -> PyResult<Py<PyAny>> {
         // from qiskit.visualization.dag_visualization import dag_drawer
         //
