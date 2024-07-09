@@ -19,7 +19,6 @@ from a backend
 
 from __future__ import annotations
 
-import copy
 import itertools
 
 from typing import Optional, List, Any
@@ -424,7 +423,7 @@ class Target(BaseTarget):
             properties = {None: None}
         if instruction_name in self._gate_map:
             raise AttributeError(f"Instruction {instruction_name} is already in the target")
-        super().add_instruction(instruction, instruction_name, copy.copy(properties))
+        super().add_instruction(instruction, instruction_name, properties)
         self._gate_map[instruction_name] = properties
         self._coupling_graph = None
         self._instruction_durations = None

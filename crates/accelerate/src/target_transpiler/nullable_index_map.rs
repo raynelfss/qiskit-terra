@@ -355,16 +355,21 @@ where
     V: IntoPy<PyObject> + FromPyObject<'py> + Clone,
 {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let as_dict: &Bound<PyDict> = ob.downcast()?;
-        let null_val: Option<V> = if as_dict.contains(ob.py().None())? {
-            let val = Some(as_dict.get_item(ob.py().None())?.unwrap().extract()?);
-            as_dict.del_item(ob.py().None())?;
-            val
-        } else {
-            None
-        };
-        let map: IndexMap<K, V, RandomState> = as_dict.extract()?;
-        Ok(Self { map, null_val })
+        let map: IndexMap<Option<K>, V, RandomState> = ob.extract()?;
+        let mut null_val: Option<V> = None;
+        let filtered = map
+            .into_iter()
+            .filter_map(|(key, value)| match (key, value) {
+                (Some(key), value) => Some((key, value)),
+                (None, value) => {
+                    null_val = Some(value);
+                    None
+                }
+            });
+        Ok(Self {
+            map: filtered.collect(),
+            null_val,
+        })
     }
 }
 
