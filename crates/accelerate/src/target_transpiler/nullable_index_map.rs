@@ -24,6 +24,18 @@ use std::{hash::Hash, mem::swap};
 
 type BaseMap<K, V> = IndexMap<K, V, RandomState>;
 
+///
+/// An `IndexMap`-like structure thet can be used when one of the keys can have a `None` value.
+///
+/// This structure is essentially a wrapper around the `IndexMap<K, V>` struct that allows the
+/// storage of `Option<K>` key values as `K`` and keep an extra slot reserved only for the
+/// `None` instance. There are some upsides to this including:
+///
+/// The ability to index using Option<&K> to index a specific key.
+/// Store keys as non option wrapped to obtain references to K instead of reference to Option<K>.
+///
+/// **Warning:** This is an experimental feature and should be used with care as it does not
+/// fully implement all the methods present in `IndexMap<K, V>` due to API limitations.
 #[derive(Debug, Clone)]
 pub struct NullableIndexMap<K, V>
 where
@@ -39,6 +51,8 @@ where
     K: Eq + Hash + Clone,
     V: Clone,
 {
+    /// Returns a reference to the value stored at `key`, if it does not exist
+    /// `None` is returned instead.
     pub fn get(&self, key: Option<&K>) -> Option<&V> {
         match key {
             Some(key) => self.map.get(key),
@@ -46,6 +60,8 @@ where
         }
     }
 
+    /// Returns a mutable reference to the value stored at `key`, if it does not
+    /// exist `None` is returned instead.
     pub fn get_mut(&mut self, key: Option<&K>) -> Option<&mut V> {
         match key {
             Some(key) => self.map.get_mut(key),
@@ -53,6 +69,10 @@ where
         }
     }
 
+    /// Inserts a `value` in the slot alotted to `key`.
+    ///
+    /// If a previous value existed there previously it will be returned, otherwise
+    /// `None` will be returned.
     pub fn insert(&mut self, key: Option<K>, value: V) -> Option<V> {
         match key {
             Some(key) => self.map.insert(key, value),
@@ -64,6 +84,11 @@ where
         }
     }
 
+    /// Creates an instance of `NullableIndexMap<K, V>` with capacity to hold `n`+1 key-value
+    /// pairs.
+    ///
+    /// Notice that an extra space needs to be alotted to store the instance of `None` a
+    /// key.
     pub fn with_capacity(n: usize) -> Self {
         Self {
             map: BaseMap::with_capacity(n),
@@ -71,6 +96,8 @@ where
         }
     }
 
+    /// Creates an instance of `NullableIndexMap<K, V>` from an iterator over instances of
+    /// `(Option<K>, V)`.
     pub fn from_iter<'a, I>(iter: I) -> Self
     where
         I: IntoIterator<Item = (Option<K>, V)> + 'a,
@@ -89,6 +116,7 @@ where
         }
     }
 
+    /// Returns `true` if the map contains a slot indexed by `key`, otherwise `false`.
     pub fn contains_key(&self, key: Option<&K>) -> bool {
         match key {
             Some(key) => self.map.contains_key(key),
@@ -96,6 +124,11 @@ where
         }
     }
 
+    /// Extends the key-value pairs in the map with the contents of an iterator over
+    /// `(Option<K>, V)`.
+    ///
+    /// If an already existent key is provided, it will be replaced by the entry provided
+    /// in the iterator.
     pub fn extend<'a, I>(&mut self, iter: I)
     where
         I: IntoIterator<Item = (Option<K>, V)> + 'a,
@@ -110,6 +143,10 @@ where
         self.map.extend(filtered)
     }
 
+    /// Removes the entry allotted to `key` from the map and returns it. The index of
+    /// this entry is then replaced by the entry located at the last index.
+    ///
+    /// `None` will be returned if the `key` is not present in the map.
     pub fn swap_remove(&mut self, key: Option<&K>) -> Option<V> {
         match key {
             Some(key) => self.map.swap_remove(key),
@@ -121,6 +158,7 @@ where
         }
     }
 
+    /// Returns an iterator over references of the key-value pairs of the map.
     pub fn iter(&self) -> Iter<K, V> {
         Iter {
             map: self.map.iter(),
@@ -128,6 +166,7 @@ where
         }
     }
 
+    /// Returns an iterator over references of the keys present in the map.
     pub fn keys(&self) -> Keys<K, V> {
         Keys {
             map_keys: self.map.keys(),
@@ -135,6 +174,7 @@ where
         }
     }
 
+    /// Returns an iterator over references of all the values present in the map.
     pub fn values(&self) -> Values<K, V> {
         Values {
             map_values: self.map.values(),
@@ -142,6 +182,7 @@ where
         }
     }
 
+    /// Returns the number of key-value pairs present in the map.
     pub fn len(&self) -> usize {
         self.map.len() + self.null_val.is_some() as usize
     }
@@ -163,6 +204,7 @@ where
     }
 }
 
+/// Iterator for the key-value pairs in `NullableIndexMap`.
 pub struct Iter<'a, K, V> {
     map: BaseIter<'a, K, V>,
     null_value: &'a Option<V>,
@@ -200,6 +242,7 @@ impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> {
     }
 }
 
+/// Owned iterator over the key-value pairs in `NullableIndexMap`.
 pub struct IntoIter<K, V>
 where
     V: Clone,
@@ -246,6 +289,7 @@ where
     }
 }
 
+/// Iterator over the keys of a `NullableIndexMap`.
 pub struct Keys<'a, K, V> {
     map_keys: BaseKeys<'a, K, V>,
     null_value: bool,
@@ -282,6 +326,7 @@ impl<'a, K, V> ExactSizeIterator for Keys<'a, K, V> {
     }
 }
 
+/// Iterator over the values of a `NullableIndexMap`.
 pub struct Values<'a, K, V> {
     map_values: BaseValues<'a, K, V>,
     null_value: &'a Option<V>,
@@ -355,20 +400,19 @@ where
     V: IntoPy<PyObject> + FromPyObject<'py> + Clone,
 {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let mut null_val = None;
-        let dict_downcast: &Bound<PyDict> = ob.downcast()?;
-        let iter = dict_downcast.iter().filter_map(|(key, value)| {
-            let (key, value): (Option<K>, V) = (key.extract().unwrap(), value.extract().unwrap());
-            match (key, value) {
+        let map: IndexMap<Option<K>, V, RandomState> = ob.extract()?;
+        let mut null_val: Option<V> = None;
+        let filtered = map
+            .into_iter()
+            .filter_map(|(key, value)| match (key, value) {
                 (Some(key), value) => Some((key, value)),
                 (None, value) => {
                     null_val = Some(value);
                     None
                 }
-            }
-        });
+            });
         Ok(Self {
-            map: iter.collect(),
+            map: filtered.collect(),
             null_val,
         })
     }
