@@ -2662,8 +2662,8 @@ def _format(operand):
     ///
     /// Returns:
     ///     list[DAGOpNode]: the list of node ids containing the given op.
-    #[pyo3(signature=(op=None, include_directives=true))]
-    fn op_nodes(
+    #[pyo3(name= "op_nodes", signature=(op=None, include_directives=true))]
+    fn py_op_nodes(
         &self,
         py: Python,
         op: Option<&Bound<PyType>>,
@@ -2988,88 +2988,88 @@ def _format(operand):
     /// TODO: Gates that use the same cbits will end up in different
     /// layers as this is currently implemented. This may not be
     /// the desired behavior.
-    fn layers(&self, py: Python) -> Py<PyIterator> {
-        // graph_layers = self.multigraph_layers()
-        // try:
-        //     next(graph_layers)  # Remove input nodes
-        // except StopIteration:
-        //     return
-        //
-        // for graph_layer in graph_layers:
-        //
-        //     # Get the op nodes from the layer, removing any input and output nodes.
-        //     op_nodes = [node for node in graph_layer if isinstance(node, DAGOpNode)]
-        //
-        //     # Sort to make sure they are in the order they were added to the original DAG
-        //     # It has to be done by node_id as graph_layer is just a list of nodes
-        //     # with no implied topology
-        //     # Drawing tools rely on _node_id to infer order of node creation
-        //     # so we need this to be preserved by layers()
-        //     op_nodes.sort(key=lambda nd: nd._node_id)
-        //
-        //     # Stop yielding once there are no more op_nodes in a layer.
-        //     if not op_nodes:
-        //         return
-        //
-        //     # Construct a shallow copy of self
-        //     new_layer = self.copy_empty_like()
-        //
-        //     for node in op_nodes:
-        //         # this creates new DAGOpNodes in the new_layer
-        //         new_layer.apply_operation_back(node.op, node.qargs, node.cargs, check=False)
-        //
-        //     # The quantum registers that have an operation in this layer.
-        //     support_list = [
-        //         op_node.qargs
-        //         for op_node in new_layer.op_nodes()
-        //         if not getattr(op_node.op, "_directive", False)
-        //     ]
-        //
-        //     yield {"graph": new_layer, "partition": support_list}
+    fn layers(&self, py: Python) -> PyResult<Py<PyIterator>> {
+        let layer_list = PyList::empty_bound(py);
+        let mut graph_layers = self.multigraph_layers();
+        if graph_layers.next().is_none() {
+            return Ok(PyIterator::from_bound_object(&layer_list)?.into());
+        }
+        for graph_layer in graph_layers {
+            let layer_dict = PyDict::new_bound(py);
+            // Sort to make sure they are in the order they were added to the original DAG
+            // It has to be done by node_id as graph_layer is just a list of nodes
+            // with no implied topology
+            // Drawing tools rely on _node_id to infer order of node creation
+            // so we need this to be preserved by layers()
+            // Get the op nodes from the layer, removing any input and output nodes.
+            let mut op_nodes: Vec<(&PackedInstruction, &NodeIndex)> = graph_layer
+                .iter()
+                .filter_map(|node| match self.dag.node_weight(*node) {
+                    Some(dag_node) => Some((dag_node, node)),
+                    None => None,
+                })
+                .filter_map(|(node, index)| match node {
+                    NodeType::Operation(oper) => Some((oper, index)),
+                    _ => None,
+                })
+                .collect();
+            op_nodes.sort_by_key(|(_, node_index)| **node_index);
 
-        // TODO: Finish rust implementation
+            if op_nodes.is_empty() {
+                return Ok(PyIterator::from_bound_object(&layer_list)?.into());
+            }
 
-        // let layer_list = PyList::empty_bound(py);
-        // let graph_layers = self.multigraph_layers();
-        // if graph_layers.next().is_none() {
-        //     return PyIterator::from_bound_object(&layer_list).unwrap().into()
-        // }
-        // for graph_layer in graph_layers {
-        //     // Sort to make sure they are in the order they were added to the original DAG
-        //     // It has to be done by node_id as graph_layer is just a list of nodes
-        //     // with no implied topology
-        //     // Drawing tools rely on _node_id to infer order of node creation
-        //     // so we need this to be preserved by layers()
-        //     // Get the op nodes from the layer, removing any input and output nodes.
-        //     let op_nodes: Vec<(&PackedInstruction, &NodeIndex)> = graph_layer
-        //         .iter()
-        //         .filter_map(|node| match self.dag.node_weight(*node){
-        //             Some(dag_node) => Some((dag_node, node)),
-        //             None => None,
-        //         })
-        //         .filter_map(|(node, index)| match node {
-        //             NodeType::Operation(oper) => Some((oper, index)),
-        //             _ => None,
-        //         })
-        //         .collect();
-        //     op_nodes.sort_by_key(|(_, node_index)| node_index);
+            let mut new_layer = self.copy_empty_like(py)?;
 
-        //     if op_nodes.is_empty() {
-        //         return PyIterator::from_bound_object(&layer_list).unwrap().into()
-        //     }
+            for (node, index) in &op_nodes {
+                let node_obj = self.get_node(py, **index)?;
+                let qubits = PyTuple::new_bound(
+                    py,
+                    self.qargs_cache
+                        .intern(node.qubits_id)
+                        .iter()
+                        .map(|qubit| self.qubits.get(*qubit)),
+                );
+                let clbits = PyTuple::new_bound(
+                    py,
+                    self.cargs_cache
+                        .intern(node.clbits_id)
+                        .iter()
+                        .map(|clbit| self.clbits.get(*clbit)),
+                );
+                new_layer.apply_operation_back(
+                    py,
+                    node_obj.bind(py).getattr("op")?,
+                    Some(TupleLikeArg { value: qubits }),
+                    Some(TupleLikeArg { value: clbits }),
+                    false,
+                )?;
+            }
 
-        //     let new_layer = self.copy_empty_like(py)?;
-
-        //     for (node, index) in op_nodes {
-        //         let node_obj = self.get_node(py, *index)?;
-        //         new_layer.apply_operation_back(py, node_obj.bind(py).to_owned(), self.qargs_cache[node.qubits_id], self.cargs_cache[node.clbits_id], false);
-        //     }
-
-        //     let support_list = op_nodes.iter(|(node, node_id)| node.qubits_id)
-
-        // }
-
-        todo!()
+            let new_layer_op_nodes = new_layer.op_nodes(false).filter_map(|node_index| {
+                match new_layer.dag.node_weight(node_index) {
+                    Some(NodeType::Operation(ref node)) => Some(node),
+                    _ => None,
+                }
+            });
+            let support_iter = new_layer_op_nodes.into_iter().map(|node| {
+                PyTuple::new_bound(
+                    py,
+                    new_layer
+                        .qubits
+                        .map_indices(new_layer.qargs_cache.intern(node.qubits_id)),
+                )
+            });
+            let support_list = PyList::empty_bound(py);
+            for support_qarg in support_iter {
+                support_list.append(support_qarg)?;
+            }
+            layer_dict.set_item("graph", new_layer.into_py(py))?;
+            layer_dict.set_item("partition", support_list)?;
+            layer_list.append(layer_dict)?;
+        }
+        Ok(layer_list.into_any().iter()?.into())
+        // todo!()
     }
 
     /// Yield a layer for all gates of this circuit.
@@ -3893,6 +3893,30 @@ impl DAGCircuit {
             }
         };
         Ok(dag_node)
+    }
+
+    pub fn op_nodes<'a>(
+        &'a self,
+        include_directives: bool,
+    ) -> Box<dyn Iterator<Item = NodeIndex> + 'a> {
+        let node_ops_iter = self
+            .dag
+            .node_references()
+            .filter_map(|(node_index, node_type)| match node_type {
+                NodeType::Operation(ref node) => Some((node_index, node)),
+                _ => None,
+            });
+        if !include_directives {
+            Box::new(node_ops_iter.filter_map(|(index, node)| {
+                if !node.op.directive() {
+                    Some(index)
+                } else {
+                    None
+                }
+            }))
+        } else {
+            Box::new(node_ops_iter.map(|(index, _)| index))
+        }
     }
 
     /// Returns an iterator over the layers of the graph.
