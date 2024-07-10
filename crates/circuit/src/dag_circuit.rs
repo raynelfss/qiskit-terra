@@ -2959,7 +2959,8 @@ def _format(operand):
     }
 
     /// Return a list of op nodes in the first layer of this dag.
-    fn front_layers(&self) -> Py<PyList> {
+    #[pyo3(name = "front_layer")]
+    fn py_front_layer(&self, py: Python) -> PyResult<Py<PyList>> {
         // graph_layers = self.multigraph_layers()
         // try:
         //     next(graph_layers)  # Remove input nodes
@@ -2969,7 +2970,13 @@ def _format(operand):
         // op_nodes = [node for node in next(graph_layers) if isinstance(node, DAGOpNode)]
         //
         // return op_nodes
-        todo!()
+        // todo!()
+        let native_front_layer = self.front_layer();
+        let front_layer_list = PyList::empty_bound(py);
+        for node in native_front_layer {
+            front_layer_list.append(self.get_node(py, node)?)?;
+        }
+        Ok(front_layer_list.into())
     }
 
     /// Yield a shallow view on a layer of this DAGCircuit for all d layers of this circuit.
@@ -3927,5 +3934,22 @@ impl DAGCircuit {
             Ok(layer) => layer,
             Err(_) => unreachable!("Not a DAG."),
         })
+    }
+
+    pub fn front_layer<'a>(&'a self) -> Box<dyn Iterator<Item = NodeIndex> + 'a> {
+        let mut graph_layers = self.multigraph_layers();
+        graph_layers.next();
+
+        let next_layer = graph_layers.next();
+        match next_layer {
+            Some(layer) => Box::new(layer.into_iter().filter_map(|node| {
+                if matches!(self.dag.node_weight(node).unwrap(), NodeType::Operation(_)) {
+                    Some(node)
+                } else {
+                    None
+                }
+            })),
+            None => Box::new(vec![].into_iter()),
+        }
     }
 }
