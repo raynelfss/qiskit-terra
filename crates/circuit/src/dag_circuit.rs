@@ -2598,7 +2598,7 @@ def _format(operand):
     /// no nodes are specified all edges from the graph are returned.
     ///
     /// Args:
-    ///     nodes(DAGOpNode, DAGInNode, DAGOutNode or Vec of DAGOpNode, DAGInNode, or DAGOutNode:
+    /// nodes(DAGOpNode, DAGInNode, or DAGOutNode|list(DAGOpNode, DAGInNode, or DAGOutNode):
     ///         Either a list of nodes or a single input node. If none is specified,
     ///         all edges are returned from the graph.
     ///
@@ -2606,43 +2606,36 @@ def _format(operand):
     ///     edge: the edge as a tuple with the format
     ///         (source node, destination node, edge wire)
     fn edges(&self, nodes: Option<Bound<PyAny>>, py: Python) -> PyResult<Py<PyIterator>> {
-
-        let get_node_index = |obj: Bound<PyAny>| -> PyResult<NodeIndex> {
+        let get_node_index = |obj: &Bound<PyAny>| -> PyResult<NodeIndex> {
             Ok(obj.downcast::<DAGNode>()?.borrow().node.unwrap())
         };
 
         let actual_nodes: Vec<_> = match nodes {
-            None => self.dag.node_references().map(|(index, weight)| index).collect(),
+            None => self.dag.node_indices().collect(),
             Some(nodes) => {
-                if let Ok(node) = get_node_index(nodes.clone()) {
-                    let mut out = Vec::new();
+                let mut out = Vec::new();
+                if let Ok(node) = get_node_index(&nodes) {
                     out.push(node);
-                    out
                 } else {
-                    let mut out = Vec::new();
-                    for node in nodes.iter()?
-                    {
-                        out.push(get_node_index(node?)?);
+                    for node in nodes.iter()? {
+                        out.push(get_node_index(&node?)?);
                     }
-                     out
-                 }
+                }
+                out
             }
         };
 
         let mut edges = Vec::new();
         for node in actual_nodes {
-            let in_out_nodes = self.dag.edges_directed(node, Outgoing).map(|e| {
-                (
-                    self.get_node(py, e.source()),
-                    self.get_node(py, e.target()),
-                    match e.weight() {
+            for edge in self.dag.edges_directed(node, Outgoing) {
+                edges.push((
+                    self.get_node(py, edge.source())?,
+                    self.get_node(py, edge.target())?,
+                    match edge.weight() {
                         Wire::Qubit(qubit) => self.qubits.get(*qubit).unwrap(),
                         Wire::Clbit(clbit) => self.clbits.get(*clbit).unwrap(),
-                    }
-                )
-            });
-            for (source, target, wire) in in_out_nodes {
-                edges.push((source?, target?, wire));
+                    },
+                ))
             }
         }
 
