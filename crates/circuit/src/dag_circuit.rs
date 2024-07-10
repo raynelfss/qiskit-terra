@@ -3336,14 +3336,14 @@ def _format(operand):
     ///     otherwise None.
     #[pyo3(signature=(scale=0.7, filename=None, style="color"))]
     fn draw<'py>(
-        &self,
+        slf: PyRef<'py, Self>,
         py: Python<'py>,
         scale: f64,
         filename: Option<&str>,
         style: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let module = PyModule::import_bound(py, "qiskit.visualization.dag_visualization")?;
-        module.call_method1("dag_drawer", (scale, filename, style))
+        module.call_method1("dag_drawer", (slf, scale, filename, style))
     }
 
     fn _to_dot<'py>(

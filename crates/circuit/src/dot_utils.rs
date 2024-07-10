@@ -21,8 +21,7 @@ use std::io::prelude::*;
 use crate::dag_circuit::{DAGCircuit, Wire};
 use pyo3::prelude::*;
 use rustworkx_core::petgraph::visit::{
-    Data, EdgeRef, GraphBase, GraphProp, IntoEdgeReferences, IntoNodeReferences, NodeIndexable,
-    NodeRef,
+    EdgeRef, IntoEdgeReferences, IntoNodeReferences, NodeIndexable, NodeRef,
 };
 
 static TYPE: [&str; 2] = ["graph", "digraph"];
