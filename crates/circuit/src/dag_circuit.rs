@@ -3099,30 +3099,29 @@ def _format(operand):
     }
 
     /// Return a set of non-conditional runs of 2q "op" nodes.
-    fn collect_2q_runs(&self) -> PyResult<Py<PyList>> {
-        // to_qid = {}
-        // for i, qubit in enumerate(self.qubits):
-        //     to_qid[qubit] = i
-        //
-        // def filter_fn(node):
-        //     if isinstance(node, DAGOpNode):
-        //         return (
-        //             isinstance(node.op, Gate)
-        //             and len(node.qargs) <= 2
-        //             and not getattr(node.op, "condition", None)
-        //             and not node.op.is_parameterized()
-        //         )
-        //     else:
-        //         return None
-        //
-        // def color_fn(edge):
-        //     if isinstance(edge, Qubit):
-        //         return to_qid[edge]
-        //     else:
-        //         return None
-        //
-        // return rx.collect_bicolor_runs(self._multi_graph, filter_fn, color_fn)
-        todo!()
+    #[pyo3(name = "collect_2q_runs")]
+    fn py_collect_2q_runs(&self, py: Python) -> PyResult<Py<PyList>> {
+        match self.collect_2q_runs() {
+            Some(runs) => {
+                let runs_iter = runs.into_iter().map(|node_indices| {
+                    PyList::new_bound(
+                        py,
+                        node_indices
+                            .into_iter()
+                            .map(|node_index| self.get_node(py, node_index).unwrap()),
+                    )
+                    .unbind()
+                });
+                let out_list = PyList::empty_bound(py);
+                for run_list in runs_iter {
+                    out_list.append(run_list)?;
+                }
+                Ok(out_list.unbind())
+            }
+            None => Err(PyRuntimeError::new_err(
+                "Invalid DAGCircuit, cycle encountered",
+            )),
+        }
     }
 
     /// Iterator for nodes that affect a given wire.
@@ -3398,6 +3397,44 @@ impl DAGCircuit {
         };
         rustworkx_core::dag_algo::collect_runs(&self.dag, filter_fn)
             .map(|node_iter| node_iter.map(|x| x.unwrap()))
+    }
+
+    /// Return a set of non-conditional runs of 2q "op" nodes.
+    pub fn collect_2q_runs(&self) -> Option<Vec<Vec<NodeIndex>>> {
+        let filter_fn = move |node_index: NodeIndex| -> Result<Option<bool>, Infallible> {
+            let node = &self.dag[node_index];
+            match node {
+                NodeType::Operation(inst) => match &inst.op {
+                    OperationType::Standard(gate) => Ok(Some(
+                        gate.num_qubits() <= 2
+                            && match &inst.extra_attrs {
+                                None => true,
+                                Some(attrs) => attrs.condition.is_none(),
+                            }
+                            && !inst.is_parameterized(),
+                    )),
+                    OperationType::Gate(gate) => Ok(Some(
+                        gate.num_qubits() <= 2
+                            && match &inst.extra_attrs {
+                                None => true,
+                                Some(attrs) => attrs.condition.is_none(),
+                            }
+                            && !inst.is_parameterized(),
+                    )),
+                    _ => Ok(Some(false)),
+                },
+                _ => Ok(None),
+            }
+        };
+
+        let color_fn = move |edge_index: EdgeIndex| -> Result<Option<usize>, Infallible> {
+            let wire = self.dag.edge_weight(edge_index).unwrap();
+            match wire {
+                Wire::Qubit(index) => Ok(Some(index.0 as usize)),
+                Wire::Clbit(_) => Ok(None),
+            }
+        };
+        rustworkx_core::dag_algo::collect_bicolor_runs(&self.dag, filter_fn, color_fn).unwrap()
     }
 
     fn increment_op(&mut self, op: String) {
