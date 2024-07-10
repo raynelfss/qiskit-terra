@@ -375,7 +375,7 @@ where
             Some(k) => self.map.index(k),
             None => match &self.null_val {
                 Some(val) => val,
-                None => panic!("Null value not set"),
+                None => panic!("The provided key is not present in map: None"),
             },
         }
     }
