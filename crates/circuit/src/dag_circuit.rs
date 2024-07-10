@@ -2598,9 +2598,9 @@ def _format(operand):
         Ok(tup.into_any().iter().unwrap().unbind())
     }
 
-    /// Iterator for edge values and source and dest node
+    /// Iterator for edge values with source and destination node.
     ///
-    /// This works by returning the output edges from the specified nodes. If
+    /// This works by returning the outgoing edges from the specified nodes. If
     /// no nodes are specified all edges from the graph are returned.
     ///
     /// Args:
@@ -2609,19 +2609,47 @@ def _format(operand):
     ///         all edges are returned from the graph.
     ///
     /// Yield:
-    ///     edge: the edge in the same format as out_edges the tuple
-    ///         (source node, destination node, edge data)
-    fn edges(&self, nodes: Option<Bound<PyAny>>) -> Py<PyIterator> {
-        // if nodes is None:
-        //     nodes = self._multi_graph.nodes()
-        //
-        // elif isinstance(nodes, (DAGOpNode, DAGInNode, DAGOutNode)):
-        //     nodes = [nodes]
-        // for node in nodes:
-        //     raw_nodes = self._multi_graph.out_edges(node._node_id)
-        //     for source, dest, edge in raw_nodes:
-        //         yield (self._multi_graph[source], self._multi_graph[dest], edge)
-        todo!()
+    ///     edge: the edge as a tuple with the format
+    ///         (source node, destination node, edge wire)
+    fn edges(&self, nodes: Option<Bound<PyAny>>, py: Python) -> PyResult<Py<PyIterator>> {
+        let get_node_index = |obj: &Bound<PyAny>| -> PyResult<NodeIndex> {
+            Ok(obj.downcast::<DAGNode>()?.borrow().node.unwrap())
+        };
+
+        let actual_nodes: Vec<_> = match nodes {
+            None => self.dag.node_indices().collect(),
+            Some(nodes) => {
+                let mut out = Vec::new();
+                if let Ok(node) = get_node_index(&nodes) {
+                    out.push(node);
+                } else {
+                    for node in nodes.iter()? {
+                        out.push(get_node_index(&node?)?);
+                    }
+                }
+                out
+            }
+        };
+
+        let mut edges = Vec::new();
+        for node in actual_nodes {
+            for edge in self.dag.edges_directed(node, Outgoing) {
+                edges.push((
+                    self.get_node(py, edge.source())?,
+                    self.get_node(py, edge.target())?,
+                    match edge.weight() {
+                        Wire::Qubit(qubit) => self.qubits.get(*qubit).unwrap(),
+                        Wire::Clbit(clbit) => self.clbits.get(*clbit).unwrap(),
+                    },
+                ))
+            }
+        }
+
+        Ok(PyTuple::new_bound(py, edges)
+            .into_any()
+            .iter()
+            .unwrap()
+            .unbind())
     }
 
     /// Get the list of "op" nodes in the dag.
