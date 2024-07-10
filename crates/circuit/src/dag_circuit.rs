@@ -16,6 +16,7 @@ use crate::circuit_instruction::{
     convert_py_to_operation_type, CircuitInstruction, OperationTypeConstruct,
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
+use crate::dot_utils::build_dot;
 use crate::error::DAGCircuitError;
 use crate::imports::{DAG_NODE, VARIABLE_MAPPER};
 use crate::interner::{Index, IndexedInterner, Interner};
@@ -43,12 +44,12 @@ use rustworkx_core::petgraph::prelude::StableDiGraph;
 use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, NodeIndex};
 use rustworkx_core::petgraph::visit::{IntoNodeReferences, NodeCount, NodeRef};
 use rustworkx_core::petgraph::Incoming;
-use std::collections::VecDeque;
 use rustworkx_core::traversal::{
     ancestors as core_ancestors, bfs_successors as core_bfs_successors,
     descendants as core_descendants,
 };
 use std::borrow::Borrow;
+use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::f64::consts::PI;
 use std::ffi::c_double;
@@ -99,7 +100,7 @@ where
 }
 
 #[derive(Clone, Debug)]
-enum NodeType {
+pub(crate) enum NodeType {
     QubitIn(Qubit),
     QubitOut(Qubit),
     ClbitIn(Clbit),
@@ -118,7 +119,7 @@ impl NodeType {
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
-enum Wire {
+pub(crate) enum Wire {
     Qubit(Qubit),
     Clbit(Clbit),
 }
@@ -137,7 +138,7 @@ pub struct DAGCircuit {
     metadata: Option<Py<PyDict>>,
     calibrations: HashMap<String, Py<PyDict>>,
 
-    dag: StableDiGraph<NodeType, Wire>,
+    pub(crate) dag: StableDiGraph<NodeType, Wire>,
 
     #[pyo3(get)]
     qregs: Py<PyDict>,
@@ -149,9 +150,9 @@ pub struct DAGCircuit {
     /// The cache used to intern instruction cargs.
     cargs_cache: IndexedInterner<Vec<Clbit>>,
     /// Qubits registered in the circuit.
-    qubits: BitData<Qubit>,
+    pub(crate) qubits: BitData<Qubit>,
     /// Clbits registered in the circuit.
-    clbits: BitData<Clbit>,
+    pub(crate) clbits: BitData<Clbit>,
     /// Global phase.
     global_phase: PyObject,
     /// Duration.
@@ -3335,11 +3336,27 @@ def _format(operand):
     ///     Ipython.display.Image: if in Jupyter notebook and not saving to file,
     ///     otherwise None.
     #[pyo3(signature=(scale=0.7, filename=None, style="color"))]
-    fn draw(&self, scale: f64, filename: Option<&str>, style: &str) -> PyResult<Py<PyAny>> {
-        // from qiskit.visualization.dag_visualization import dag_drawer
-        //
-        // return dag_drawer(dag=self, scale=scale, filename=filename, style=style)
-        todo!()
+    fn draw<'py>(
+        &self,
+        py: Python<'py>,
+        scale: f64,
+        filename: Option<&str>,
+        style: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let module = PyModule::import_bound(py, "qiskit.visualization.dag_visualization")?;
+        module.call_method1("dag_drawer", (scale, filename, style))
+    }
+
+    fn _to_dot<'py>(
+        &self,
+        py: Python<'py>,
+        graph_attrs: Option<BTreeMap<String, String>>,
+        node_attrs: Option<PyObject>,
+        edge_attrs: Option<PyObject>,
+    ) -> PyResult<Bound<'py, PyString>> {
+        let mut buffer = Vec::<u8>::new();
+        build_dot(py, self, &mut buffer, graph_attrs, node_attrs, edge_attrs)?;
+        Ok(PyString::new_bound(py, std::str::from_utf8(&buffer)?))
     }
 }
 
@@ -3679,7 +3696,7 @@ impl DAGCircuit {
         Ok(clbit)
     }
 
-    fn get_node(&self, py: Python, node: NodeIndex) -> PyResult<Py<PyAny>> {
+    pub(crate) fn get_node(&self, py: Python, node: NodeIndex) -> PyResult<Py<PyAny>> {
         self.unpack_into(py, node, self.dag.node_weight(node).unwrap())
     }
 
