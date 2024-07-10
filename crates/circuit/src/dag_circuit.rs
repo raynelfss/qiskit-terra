@@ -36,15 +36,14 @@ use pyo3::types::{
     PySlice, PyString, PyTuple, PyType,
 };
 use pyo3::{intern, PyObject, PyResult, PyVisit};
+use rustworkx_core::dag_algo::layers;
 use rustworkx_core::err::ContractError;
 use rustworkx_core::graph_ext::ContractNodesDirected;
-use rustworkx_core::petgraph::{self, graph};
+use rustworkx_core::petgraph;
 use rustworkx_core::petgraph::prelude::StableDiGraph;
 use rustworkx_core::petgraph::stable_graph::{DefaultIx, IndexType, Neighbors, NodeIndex};
 use rustworkx_core::petgraph::visit::{IntoNodeReferences, NodeCount, NodeRef};
 use rustworkx_core::petgraph::Incoming;
-use rustworkx_core::dag_algo::layers;
-use std::collections::VecDeque;
 use rustworkx_core::traversal::{
     ancestors as core_ancestors, bfs_successors as core_bfs_successors,
     descendants as core_descendants,
@@ -3029,7 +3028,7 @@ def _format(operand):
         //     yield {"graph": new_layer, "partition": support_list}
 
         // TODO: Finish rust implementation
-        
+
         // let layer_list = PyList::empty_bound(py);
         // let graph_layers = self.multigraph_layers();
         // if graph_layers.next().is_none() {
@@ -3054,7 +3053,7 @@ def _format(operand):
         //         })
         //         .collect();
         //     op_nodes.sort_by_key(|(_, node_index)| node_index);
-            
+
         //     if op_nodes.is_empty() {
         //         return PyIterator::from_bound_object(&layer_list).unwrap().into()
         //     }
@@ -3099,14 +3098,16 @@ def _format(operand):
     }
 
     /// Yield layers of the multigraph.
-    #[pyo3(name="multigraph_layers")]
+    #[pyo3(name = "multigraph_layers")]
     fn py_multigraph_layers(&self, py: Python) -> PyResult<Py<PyIterator>> {
-        let graph_layers = self.multigraph_layers().map(
-            |layer| -> Vec<PyObject> {
-                layer.into_iter().filter_map(|index| self.get_node(py, index).ok()).collect()
-            }
-        );
-        let list: Bound<PyList> = PyList::new_bound(py, graph_layers.collect::<Vec<Vec<PyObject>>>());
+        let graph_layers = self.multigraph_layers().map(|layer| -> Vec<PyObject> {
+            layer
+                .into_iter()
+                .filter_map(|index| self.get_node(py, index).ok())
+                .collect()
+        });
+        let list: Bound<PyList> =
+            PyList::new_bound(py, graph_layers.collect::<Vec<Vec<PyObject>>>());
         Ok(PyIterator::from_bound_object(&list)?.unbind())
     }
 
@@ -3898,11 +3899,9 @@ impl DAGCircuit {
     pub fn multigraph_layers<'a>(&'a self) -> impl Iterator<Item = Vec<NodeIndex>> + 'a {
         let first_layer = self.qubit_input_map.values().copied().collect();
         // A DAG is by definition acyclical, therefore unwrapping the layer should never fail.
-        layers(&self.dag, first_layer).map(|layer| {
-            match layer {
-                Ok(layer) => layer,
-                Err(_) => unreachable!("Not a DAG.")
-            }
-        })       
+        layers(&self.dag, first_layer).map(|layer| match layer {
+            Ok(layer) => layer,
+            Err(_) => unreachable!("Not a DAG."),
+        })
     }
 }
