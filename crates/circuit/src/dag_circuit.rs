@@ -1944,24 +1944,8 @@ def _format(operand):
         key: Option<Bound<PyAny>>,
     ) -> PyResult<Py<PyIterator>> {
         let nodes: PyResult<Vec<_>> = if let Some(key) = key {
-            // This path (user provided key func) is not ideal, since we no longer
-            // use a string key after moving to Rust, in favor of using a tuple
-            // of the qargs and cargs interner IDs of the node.
-            let key = |node: NodeIndex| -> PyResult<String> {
-                let node = self.get_node(py, node)?;
-                Ok(key.call1((node,))?.extract()?)
-            };
-            rustworkx_core::dag_algo::lexicographical_topological_sort(&self.dag, key, false, None)
-                .map_err(|e| match e {
-                    rustworkx_core::dag_algo::TopologicalSortError::CycleOrBadInitialState => {
-                        PyValueError::new_err(format!("{}", e))
-                    }
-                    rustworkx_core::dag_algo::TopologicalSortError::KeyError(ref e) => {
-                        e.clone_ref(py)
-                    }
-                })?
-                .into_iter()
-                .map(|n| self.get_node(py, n))
+            self.topological_key_sort(py, &key)?
+                .map(|node| self.get_node(py, node))
                 .collect()
         } else {
             // Good path, using interner IDs.
@@ -1989,9 +1973,31 @@ def _format(operand):
     ///
     /// Returns:
     ///     generator(DAGOpNode): op node in topological order
-    fn topological_op_nodes(&self, key: Option<Bound<PyAny>>) -> PyResult<Py<PyIterator>> {
-        // return (nd for nd in self.topological_nodes(key) if isinstance(nd, DAGOpNode))
-        todo!()
+    #[pyo3(name = "topological_op_nodes")]
+    fn py_topological_op_nodes(
+        &self,
+        py: Python,
+        key: Option<Bound<PyAny>>,
+    ) -> PyResult<Py<PyIterator>> {
+        let nodes: PyResult<Vec<_>> = if let Some(key) = key {
+            self.topological_key_sort(py, &key)?
+                .filter_map(|node| match self.dag.node_weight(node) {
+                    Some(NodeType::Operation(_)) => Some(self.get_node(py, node)),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            // Good path, using interner IDs.
+            self.topological_op_nodes()?
+                .map(|n| self.get_node(py, n))
+                .collect()
+        };
+
+        Ok(PyTuple::new_bound(py, nodes?)
+            .into_any()
+            .iter()
+            .unwrap()
+            .unbind())
     }
 
     /// Replace a block of nodes with a single node.
@@ -3565,6 +3571,38 @@ impl DAGCircuit {
                     }
                 })?;
         Ok(nodes.into_iter())
+    }
+
+    fn topological_op_nodes(&self) -> PyResult<impl Iterator<Item = NodeIndex> + '_> {
+        Ok(self.topological_nodes()?.filter(|node: &NodeIndex| {
+            matches!(self.dag.node_weight(*node), Some(NodeType::Operation(_)))
+        }))
+    }
+
+    fn topological_key_sort(
+        &self,
+        py: Python,
+        key: &Bound<PyAny>,
+    ) -> PyResult<impl Iterator<Item = NodeIndex>> {
+        // This path (user provided key func) is not ideal, since we no longer
+        // use a string key after moving to Rust, in favor of using a tuple
+        // of the qargs and cargs interner IDs of the node.
+        let key = |node: NodeIndex| -> PyResult<String> {
+            let node = self.get_node(py, node)?;
+            Ok(key.call1((node,))?.extract()?)
+        };
+        Ok(
+            rustworkx_core::dag_algo::lexicographical_topological_sort(&self.dag, key, false, None)
+                .map_err(|e| match e {
+                    rustworkx_core::dag_algo::TopologicalSortError::CycleOrBadInitialState => {
+                        PyValueError::new_err(format!("{}", e))
+                    }
+                    rustworkx_core::dag_algo::TopologicalSortError::KeyError(ref e) => {
+                        e.clone_ref(py)
+                    }
+                })?
+                .into_iter(),
+        )
     }
 
     fn is_wire_idle(&self, wire: Wire) -> PyResult<bool> {
