@@ -2449,9 +2449,7 @@ def _format(operand):
             false => &new_op.condition,
         };
         let old_id = node.as_ref().node.unwrap();
-        let dag_binding = self.dag.clone();
-        let old_weight = dag_binding.node_weight(old_id);
-        match old_weight {
+        match self.dag.clone().node_weight(old_id) {
             Some(NodeType::Operation(old_packed)) => {
                 let new_weight = NodeType::Operation(PackedInstruction::new(
                     new_op.operation,
