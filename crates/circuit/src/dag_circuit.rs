@@ -13,7 +13,8 @@
 use crate::bit_data::BitData;
 use crate::circuit_instruction::PackedInstruction;
 use crate::circuit_instruction::{
-    convert_py_to_operation_type, CircuitInstruction, OperationTypeConstruct,
+    convert_py_to_operation_type, operation_type_and_data_to_py, CircuitInstruction,
+    OperationTypeConstruct,
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
@@ -3089,7 +3090,7 @@ def _format(operand):
     ///
     /// A serial layer is a circuit with one gate. The layers have the
     /// same structure as in layers().
-    fn serial_layers(&self) -> PyResult<Py<PyIterator>> {
+    fn serial_layers(&self, py: Python) -> PyResult<Py<PyIterator>> {
         // for next_node in self.topological_op_nodes():
         //     new_layer = self.copy_empty_like()
         //
@@ -3107,7 +3108,67 @@ def _format(operand):
         //         support_list.append(list(qargs))
         //     l_dict = {"graph": new_layer, "partition": support_list}
         //     yield l_dict
-        todo!()
+        // todo!()
+        let layer_list = PyList::empty_bound(py);
+        for next_node in self.topological_op_nodes()? {
+            let retrieved_node: &PackedInstruction = match self.dag.node_weight(next_node) {
+                Some(NodeType::Operation(node)) => node,
+                _ => unreachable!("A non-operation node was obtained from topological_op_nodes."),
+            };
+            let mut new_layer = self.copy_empty_like(py)?;
+
+            // Save the support of the operation we add to the layer
+            let support_list = PyList::empty_bound(py);
+
+            // Operation_data;
+            let op = operation_type_and_data_to_py(
+                py,
+                &retrieved_node.op,
+                &retrieved_node.params,
+                &None,
+                &None,
+                &None,
+                &None,
+            )?;
+            let qubits = PyTuple::new_bound(
+                py,
+                self.qargs_cache
+                    .intern(retrieved_node.qubits_id)
+                    .iter()
+                    .map(|qubit| self.qubits.get(*qubit)),
+            )
+            .unbind();
+            let clbits = PyTuple::new_bound(
+                py,
+                self.cargs_cache
+                    .intern(retrieved_node.clbits_id)
+                    .iter()
+                    .map(|clbit| self.clbits.get(*clbit)),
+            );
+            // Add node to new_layers
+            new_layer.apply_operation_back(
+                py,
+                op.bind(py).to_owned(),
+                Some(TupleLikeArg {
+                    value: qubits.bind(py).to_owned(),
+                }),
+                Some(TupleLikeArg { value: clbits }),
+                true,
+            )?;
+
+            if !retrieved_node.op.directive() {
+                support_list.append(qubits)?;
+            }
+
+            let layer_dict = [
+                ("graph", new_layer.into_py(py)),
+                ("partition", support_list.into_any().unbind()),
+            ]
+            .into_py_dict_bound(py);
+            layer_list.append(layer_dict)?;
+        }
+
+        Ok(layer_list.into_any().iter()?.into())
     }
 
     /// Yield layers of the multigraph.
