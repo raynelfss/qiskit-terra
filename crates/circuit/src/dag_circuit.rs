@@ -2919,43 +2919,69 @@ def _format(operand):
 
     /// Remove all of the ancestor operation nodes of node.
     fn remove_ancestors_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        // anc = rx.ancestors(self._multi_graph, node)
-        // # TODO: probably better to do all at once using
-        // # multi_graph.remove_nodes_from; same for related functions ...
-        //
-        // for anc_node in anc:
-        //     if isinstance(anc_node, DAGOpNode):
-        //         self.remove_op_node(anc_node)
-        todo!()
+        let dag_binding = self.dag.clone();
+        for ancestor in core_ancestors(&dag_binding, node.node.unwrap())
+            .filter(|next| next != &node.node.unwrap())
+            .filter(|next| match dag_binding.node_weight(*next) {
+                Some(NodeType::Operation(_)) => true,
+                _ => false,
+            })
+        {
+            self.dag.remove_node(ancestor);
+        }
+        Ok(())
     }
 
     /// Remove all of the descendant operation nodes of node.
     fn remove_descendants_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        // desc = rx.descendants(self._multi_graph, node)
-        // for desc_node in desc:
-        //     if isinstance(desc_node, DAGOpNode):
-        //         self.remove_op_node(desc_node)
-        todo!()
+        let dag_binding = self.dag.clone();
+        for descendant in core_descendants(&dag_binding, node.node.unwrap())
+            .filter(|next| next != &node.node.unwrap())
+            .filter(|next| match dag_binding.node_weight(*next) {
+                Some(NodeType::Operation(_)) => true,
+                _ => false,
+            })
+        {
+            self.dag.remove_node(descendant);
+        }
+        Ok(())
     }
 
     /// Remove all of the non-ancestors operation nodes of node.
     fn remove_nonancestors_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        // anc = rx.ancestors(self._multi_graph, node)
-        // comp = list(set(self._multi_graph.nodes()) - set(anc))
-        // for n in comp:
-        //     if isinstance(n, DAGOpNode):
-        //         self.remove_op_node(n)
-        todo!()
+        let dag_binding = self.dag.clone();
+        let mut ancestors = core_ancestors(&dag_binding, node.node.unwrap())
+            .filter(|next| next != &node.node.unwrap())
+            .filter(|next| match dag_binding.node_weight(*next) {
+                Some(NodeType::Operation(_)) => true,
+                _ => false,
+            });
+        for node_id in dag_binding.node_indices() {
+            if ancestors.find(|anc| *anc == node_id).is_some() {
+                continue;
+            }
+            self.dag.remove_node(node_id);
+        }
+        Ok(())
     }
 
     /// Remove all of the non-descendants operation nodes of node.
     fn remove_nondescendants_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        // dec = rx.descendants(self._multi_graph, node)
-        // comp = list(set(self._multi_graph.nodes()) - set(dec))
-        // for n in comp:
-        //     if isinstance(n, DAGOpNode):
-        //         self.remove_op_node(n)
-        todo!()
+        let dag_binding = self.dag.clone();
+        let mut descendants = core_descendants(&dag_binding, node.node.unwrap())
+            .filter(|next| next != &node.node.unwrap())
+            .filter(|next| match dag_binding.node_weight(*next) {
+                Some(NodeType::Operation(_)) => true,
+                _ => false,
+            });
+
+        for node_id in dag_binding.node_indices() {
+            if descendants.find(|desc| *desc == node_id).is_some() {
+                continue;
+            }
+            self.dag.remove_node(node_id);
+        }
+        Ok(())
     }
 
     /// Return a list of op nodes in the first layer of this dag.
