@@ -1256,7 +1256,7 @@ def _format(operand):
                     }
                 }
             }
-            self.apply_operation_back(py, instr)?
+            self.push_back(py, instr)?
         };
 
         self.get_node(py, node)
@@ -1356,7 +1356,7 @@ def _format(operand):
                     }
                 }
             }
-            self.apply_operation_front(py, instr)?
+            self.push_front(py, instr)?
         };
 
         self.get_node(py, node)
@@ -3348,14 +3348,22 @@ impl DAGCircuit {
         }
     }
 
-    /// Apply an operation to the output of the circuit.
-    fn apply_operation_back(&mut self, py: Python, inst: PackedInstruction) -> PyResult<NodeIndex> {
-        let op_name = inst.op.name();
+    /// Apply a [PackedInstruction] to the back of the circuit.
+    ///
+    /// The provided `instr` MUST be valid for this DAG, e.g. its
+    /// bits, registers, vars, and interner IDs must be valid in
+    /// this DAG.
+    ///
+    /// This is mostly used to apply operations from one DAG to
+    /// another that was created from the first via
+    /// [DAGCircuit::copy_empty_like].
+    fn push_back(&mut self, py: Python, instr: PackedInstruction) -> PyResult<NodeIndex> {
+        let op_name = instr.op.name();
         let (all_cbits, vars): (Vec<Clbit>, Option<Vec<PyObject>>) = {
-            if self.may_have_additional_wires(py, &inst) {
+            if self.may_have_additional_wires(py, &instr) {
                 let mut clbits: IndexSet<Clbit> =
-                    IndexSet::from_iter(self.cargs_cache.intern(inst.clbits_id).iter().cloned());
-                let (additional_clbits, additional_vars) = self.additional_wires(py, &inst)?;
+                    IndexSet::from_iter(self.cargs_cache.intern(instr.clbits_id).iter().cloned());
+                let (additional_clbits, additional_vars) = self.additional_wires(py, &instr)?;
                 for clbit in additional_clbits {
                     clbits.insert(clbit);
                 }
@@ -3363,7 +3371,7 @@ impl DAGCircuit {
             } else {
                 (
                     self.cargs_cache
-                        .intern(inst.clbits_id)
+                        .intern(instr.clbits_id)
                         .iter()
                         .copied()
                         .collect(),
@@ -3374,8 +3382,8 @@ impl DAGCircuit {
 
         self.increment_op(op_name.to_string());
 
-        let qubits_id = inst.qubits_id;
-        let new_node = self.dag.add_node(NodeType::Operation(inst));
+        let qubits_id = instr.qubits_id;
+        let new_node = self.dag.add_node(NodeType::Operation(instr));
 
         // Put the new node in-between the previously "last" nodes on each wire
         // and the output map.
@@ -3412,12 +3420,16 @@ impl DAGCircuit {
         Ok(new_node)
     }
 
-    /// Apply an operation to the input of the circuit.
-    fn apply_operation_front(
-        &mut self,
-        py: Python,
-        inst: PackedInstruction,
-    ) -> PyResult<NodeIndex> {
+    /// Apply a [PackedInstruction] to the front of the circuit.
+    ///
+    /// The provided `instr` MUST be valid for this DAG, e.g. its
+    /// bits, registers, vars, and interner IDs must be valid in
+    /// this DAG.
+    ///
+    /// This is mostly used to apply operations from one DAG to
+    /// another that was created from the first via
+    /// [DAGCircuit::copy_empty_like].
+    fn push_front(&mut self, py: Python, inst: PackedInstruction) -> PyResult<NodeIndex> {
         let op_name = inst.op.name();
         let (all_cbits, vars): (Vec<Clbit>, Option<Vec<PyObject>>) = {
             if self.may_have_additional_wires(py, &inst) {
