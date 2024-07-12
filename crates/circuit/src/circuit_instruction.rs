@@ -91,6 +91,12 @@ impl PackedInstruction {
             .as_ref()
             .and_then(|args| args.condition.as_ref())
     }
+
+    pub fn is_parameterized(&self) -> bool {
+        self.params
+            .iter()
+            .any(|x| matches!(x, Param::ParameterExpression(_)))
+    }
 }
 
 /// A single instruction in a :class:`.QuantumCircuit`, comprised of the :attr:`operation` and
