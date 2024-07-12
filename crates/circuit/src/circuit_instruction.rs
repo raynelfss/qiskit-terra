@@ -23,6 +23,30 @@ use crate::imports::{
 };
 use crate::interner::Index;
 use crate::operations::{OperationType, Param, PyGate, PyInstruction, PyOperation, StandardGate};
+use crate::{Clbit, Qubit};
+
+pub enum InstructionResource {
+    Clbit(Clbit),
+    Var(PyObject),
+}
+
+/// A trait providing access to properties of a circuit instruction.
+/// This is implemented by the instruction ref types for [DAGCircuit]
+/// and [CircuitData] to provide a clean Rust interface for working
+/// with the instructions they own.
+pub trait Instruction {
+    fn op(&self) -> &OperationType;
+    fn label(&self) -> Option<&str>;
+    fn duration(&self) -> Option<PyObject>;
+    fn unit(&self) -> Option<&str>;
+    fn condition(&self) -> Option<PyObject>;
+    fn params(&self) -> &SmallVec<[Param; 3]>;
+    fn qubits(&self) -> &Vec<Qubit>;
+    fn clbits(&self) -> &Vec<Clbit>;
+    fn additional_resources(&self) -> Option<Vec<InstructionResource>>;
+    #[cfg(feature = "cache_pygates")]
+    fn cached(&self) -> Option<PyObject>;
+}
 
 /// These are extra mutable attributes for a circuit instruction's state. In general we don't
 /// typically deal with this in rust space and the majority of the time they're not used in Python

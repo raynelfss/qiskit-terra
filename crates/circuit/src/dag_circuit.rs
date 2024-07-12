@@ -11,13 +11,11 @@
 // that they have been altered from the originals.
 
 use crate::bit_data::BitData;
-use crate::circuit_instruction::PackedInstruction;
-use crate::circuit_instruction::{
-    convert_py_to_operation_type, CircuitInstruction, OperationTypeConstruct,
-};
+use crate::circuit_instruction::{convert_py_to_operation_type, CircuitInstruction, OperationTypeConstruct, InstructionResource, ExtraInstructionAttributes};
+use crate::circuit_instruction::{Instruction, PackedInstruction};
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::error::DAGCircuitError;
-use crate::imports::{DAG_NODE, VARIABLE_MAPPER};
+use crate::imports::{CLASSICAL_REGISTER, CLBIT, CONTROL_FLOW_OP, DAG_NODE, EXPR, ITER_VARS, STORE_OP, SWITCH_CASE_OP, VARIABLE_MAPPER};
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
 use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
@@ -47,6 +45,7 @@ use rustworkx_core::traversal::{
     ancestors as core_ancestors, bfs_successors as core_bfs_successors,
     descendants as core_descendants,
 };
+use smallvec::SmallVec;
 use std::borrow::Borrow;
 use std::convert::Infallible;
 use std::f64::consts::PI;
@@ -97,6 +96,203 @@ where
     }
 }
 
+pub struct FullInstruction {
+    pub op: OperationType,
+    pub qubits: Vec<Qubit>,
+    pub clbits: Vec<Clbit>,
+    pub params: SmallVec<[Param; 3]>,
+    pub extra_attrs: Option<Box<ExtraInstructionAttributes>>,
+    pub resources: Option<Vec<InstructionResource>>,
+    #[cfg(feature = "cache_pygates")]
+    pub py_op: Option<PyObject>,
+}
+
+pub struct InstructionRef<'py, 'a> {
+    py: Python<'py>,
+    dag: &'a DAGCircuit,
+    packed: &'a PackedInstruction,
+}
+
+impl<'py, 'a> InstructionRef<'py, 'a> {
+    fn new(
+        py: Python<'py>,
+        dag: &'a DAGCircuit,
+        packed: &'a PackedInstruction,
+    ) -> Self {
+        Self {
+            py,
+            dag,
+            packed,
+        }
+    }
+
+    fn clone_to_full(&self) -> FullInstruction {
+        FullInstruction {
+            op: self.op().clone(),
+            qubits: self.qubits().clone(),
+            clbits: self.clbits().clone(),
+            params: self.packed.params.clone(),
+            extra_attrs: self.packed.extra_attrs.clone(),
+            resources: self.additional_resources(),
+            #[cfg(feature = "cache_pygates")]
+            py_op: self.packed.py_op.clone(),
+        }
+    }
+}
+
+impl<'py, 'a> Instruction for InstructionRef<'py, 'a> {
+    fn op(&self) -> &OperationType {
+        &self.packed.op
+    }
+
+    fn label(&self) -> Option<&str> {
+        self.packed
+            .extra_attrs
+            .iter()
+            .flat_map(|attrs| attrs.label.map(String::as_str))
+            .next()
+    }
+
+    fn duration(&self) -> Option<PyObject> {
+        self.packed
+            .extra_attrs
+            .iter()
+            .flat_map(|attrs| attrs.duration.map(|d| d.clone_ref(self.py)))
+            .next()
+    }
+
+    fn unit(&self) -> Option<&str> {
+        self.packed
+            .extra_attrs
+            .iter()
+            .flat_map(|attrs| attrs.unit.map(String::as_str))
+            .next()
+    }
+
+    fn condition(&self) -> Option<PyObject> {
+        self.packed
+            .extra_attrs
+            .iter()
+            .flat_map(|attrs| attrs.condition.map(|c| c.clone_ref(self.py)))
+            .next()
+    }
+
+    fn params(&self) -> &SmallVec<[Param; 3]> {
+        &self.packed.params
+    }
+
+    fn qubits(&self) -> &Vec<Qubit> {
+        self.dag.qargs_cache.intern(self.node.qubits_id)
+    }
+
+    fn clbits(&self) -> &Vec<Clbit> {
+        self.dag.cargs_cache.intern(self.node.clbits_id)
+    }
+
+    fn additional_resources(&self) -> Option<Vec<InstructionResource>> {
+        if self.may_have_additional_wires() {
+            let wires_from_expr = |node: &Bound<PyAny>| -> Vec<InstructionResource> {
+                let mut wires = Vec::new();
+                for var in ITER_VARS.get_bound(self.py).call1((node,)).unwrap().iter().unwrap() {
+                    let var = var.unwrap();
+                    let var_var = var.getattr("var").unwrap();
+                    if var_var.is_instance(CLBIT.get_bound(self.py)).unwrap() {
+                        wires.push(InstructionResource::Clbit(self.dag.clbits.find(&var_var).unwrap()))
+                    } else if var_var.is_instance(CLASSICAL_REGISTER.get_bound(self.py)).unwrap() {
+                        for bit in var_var.iter().unwrap() {
+                            wires.push(InstructionResource::Clbit(self.dag.clbits.find(bit.as_ref().unwrap()).unwrap()));
+                        }
+                    } else {
+                        wires.push(InstructionResource::Var(var.unbind()));
+                    }
+                }
+                wires
+            };
+
+            let mut bits = Vec::new();
+            if let Some(condition) = self.condition().map(|c| c.bind(self.py)) {
+                if !condition.is_none() {
+                    if condition.is_instance(EXPR.get_bound(self.py)).unwrap() {
+                        for wire in wires_from_expr(condition) {
+                            bits.push(wire);
+                        }
+                    } else {
+                        for bit in self.dag
+                            .control_flow_module
+                            .condition_resources(&condition)?
+                            .clbits
+                            .bind(self.py)
+                        {
+                            bits.push(InstructionResource::Clbit(self.dag.clbits.find(&bit).unwrap()));
+                        }
+                    }
+                }
+            }
+
+            if let OperationType::Instruction(ref inst) = self.op() {
+                let op = inst.instruction.bind(self.py);
+                if op.is_instance(CONTROL_FLOW_OP.get_bound(self.py)).unwrap() {
+                    for var in op.call_method0("iter_captured_vars").unwrap().iter().unwrap() {
+                        bits.push(InstructionResource::Var(var.unwrap().unbind()))
+                    }
+                    if op.is_instance(SWITCH_CASE_OP.get_bound(self.py)).unwrap() {
+                        let target = op.getattr(intern!(py, "target"))?;
+                        if target.is_instance(CLBIT.get_bound(self.py)).unwrap() {
+                            bits.push(InstructionResource::Clbit(self.dag.clbits.find(&target).unwrap()));
+                        } else if target.is_instance(CLASSICAL_REGISTER.get_bound(self.py)).unwrap() {
+                            for bit in target.iter().unwrap() {
+                                bits.push(InstructionResource::Clbit(self.dag.clbits.find(bit.as_ref().unwrap()).unwrap()));
+                            }
+                        } else {
+                            for wire in wires_from_expr(&target) {
+                                bits.push(wire);
+                            }
+                        }
+                    }
+                } else if op.is_instance(STORE_OP.get_bound(self.py)).unwrap() {
+                    for wire in wires_from_expr(&op.getattr("lvalue").unwrap()) {
+                        bits.push(wire);
+                    }
+                    for wire in wires_from_expr(&op.getattr("rvalue").unwrap()) {
+                        bits.push(wire);
+                    }
+                }
+            }
+            Some(bits)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "cache_pygates")]
+    fn cached(&self) -> Option<PyObject> {
+        self.packed.py_op.map(|p| p.clone_ref(self.py))
+    }
+}
+
+impl<'py, 'a> InstructionRef<'py, 'a> {
+    fn may_have_additional_wires(&self) -> bool {
+        let has_condition = match self.condition() {
+            None => false,
+            Some(condition) => !condition.bind(self.py).is_none(),
+        };
+
+        if has_condition {
+            return true;
+        }
+
+        if let OperationType::Instruction(ref inst) = self.op() {
+            inst
+                .instruction
+                .bind(self.py)
+                .is_instance(CONTROL_FLOW_OP.get_bound(self.py)).unwrap() || inst.instruction.bind(self.py).is_instance(STORE_OP.get_bound(self.py)).unwrap()
+        } else {
+            false
+        }
+    }
+}
+
+
 #[derive(Clone, Debug)]
 enum NodeType {
     QubitIn(Qubit),
@@ -117,10 +313,50 @@ impl NodeType {
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
-enum Wire {
+pub enum Wire {
     Qubit(Qubit),
     Clbit(Clbit),
+    Var(PyObject)
 }
+
+pub enum DAGNodeRef<'py, 'a> {
+    In(Wire),
+    Out(Wire),
+    Instruction(InstructionRef<'py, 'a>),
+}
+
+// TODO: Remove me.
+// This is a temporary map type used to store a mapping of
+// Var to NodeIndex to hold us over until Var is ported to
+// Rust. Currently, we need this because PyObject cannot be
+// used as the key to an IndexMap.
+//
+// Once we've got Var ported, Wire should also become Hash + Eq
+// and we can consider combining input/output nodes maps.
+struct _VarIndexMap {
+    dict: Py<PyDict>,
+}
+
+impl _VarIndexMap {
+    pub fn new(py: Python) -> Self {
+        Self {
+            dict: PyDict::new_bound(py).unbind()
+        }
+    }
+
+    pub fn get(&self, key: &PyObject) -> Option<NodeIndex> {
+        Python::with_gil(|py| {
+            self.dict.bind(py).get_item(key).unwrap().map(|v| NodeIndex::new(v.extract().unwrap()))
+        })
+    }
+
+    pub fn insert(&mut self, key: PyObject, value: NodeIndex) {
+        Python::with_gil(|py| {
+            self.dict.bind(py).set_item(key, value.index().into_py(py)).unwrap()
+        })
+    }
+}
+
 
 /// Quantum circuit as a directed acyclic graph.
 ///
@@ -178,6 +414,12 @@ pub struct DAGCircuit {
     clbit_input_map: IndexMap<Clbit, NodeIndex>,
     /// Map from clbit to output nodes of the graph.
     clbit_output_map: IndexMap<Clbit, NodeIndex>,
+
+    // TODO: use IndexMap<Wire, NodeIndex> once Var is ported to Rust
+    /// Map from var to input nodes of the graph.
+    var_input_map: _VarIndexMap,
+    /// Map from var to output nodes of the graph.
+    var_output_map: _VarIndexMap,
 
     /// Operation kind to count
     op_names: HashMap<String, usize>,
@@ -378,6 +620,8 @@ impl DAGCircuit {
             qubit_output_map: IndexMap::new(),
             clbit_input_map: IndexMap::new(),
             clbit_output_map: IndexMap::new(),
+            var_input_map: _VarIndexMap::new(py),
+            var_output_map: _VarIndexMap::new(py),
             op_names: HashMap::new(),
 
             // Python module wrappers
@@ -1092,8 +1336,8 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if a leaf node is connected to multiple outputs
-    #[pyo3(signature = (op, qargs=None, cargs=None, *, check=true))]
-    fn apply_operation_back(
+    #[pyo3(name = "apply_operation_back", signature = (op, qargs=None, cargs=None, *, check=true))]
+    fn py_apply_operation_back(
         &mut self,
         py: Python,
         op: Bound<PyAny>,
@@ -3285,6 +3529,21 @@ def _format(operand):
 }
 
 impl DAGCircuit {
+    pub fn get<'py, 'a>(&'a self, py: Python<'py>, node: NodeIndex) -> DAGNodeRef<'py, 'a> {
+        match &self.dag[node] {
+            NodeType::QubitIn(qubit) => DAGNodeRef::In(Wire::Qubit(*qubit)),
+            NodeType::QubitOut(qubit) => DAGNodeRef::Out(Wire::Qubit(*qubit)),
+            NodeType::ClbitIn(clbit) => DAGNodeRef::In(Wire::Clbit(*clbit)),
+            NodeType::ClbitOut(clbit) => DAGNodeRef::Out(Wire::Clbit(*clbit)),
+            NodeType::Operation(op) => DAGNodeRef::Instruction(InstructionRef::new(
+                py,
+                &self.qargs_cache,
+                &self.cargs_cache,
+                op,
+            )),
+        }
+    }
+
     fn increment_op(&mut self, op: String) {
         match self.op_names.entry(op) {
             hash_map::Entry::Occupied(mut o) => {
@@ -3307,6 +3566,105 @@ impl DAGCircuit {
             }
             _ => panic!("Cannot decrement something not added!"),
         }
+    }
+
+    /// Apply an operation to the output of the circuit.
+    fn apply_operation_back(&mut self, inst: PackedInstruction, qargs: Vec<Qubit>, cargs: Vec<Clbit>, check: bool) -> PyResult<NodeIndex> {
+        let op_name = inst.op.name();
+        let mut vars: Vec<PyObject> = Vec::new();
+        let all_cbits: Vec<Clbit> = {
+            match op.resources {
+                Some(resources) => {
+                    let mut clbits: IndexSet<Clbit> = IndexSet::from_iter(op.clbits.clone());
+                    for wire in resources {
+                        match wire {
+                            InstructionResource::Clbit(clbit) => {
+                                clbits.push(clbit);
+                            }
+                            InstructionResource::Var(var) => {
+                                vars.push(var);
+                            }
+                        }
+                    }
+                    clbits.into_iter().collect()
+                },
+                None => op.clbits.clone()
+            }
+        };
+
+        if check {
+            if let Some(ref condition) = op.condition {
+                Python::with_gil(|py| {
+                    self._check_condition(py, op_name, condition.bind(py))
+                })?;
+            }
+
+            for b in qargs.iter() {
+                if !self.qubit_output_map.contains_key(b) {
+                    return Err(DAGCircuitError::new_err(format!(
+                        "qubit {} not found in output map",
+                        self.qubits.get(*b).unwrap()
+                    )));
+                }
+            }
+
+            for b in all_cbits.iter() {
+                if !self.clbit_output_map.contains_key(b) {
+                    return Err(DAGCircuitError::new_err(format!(
+                        "clbit {} not found in output map",
+                        self.clbits.get(*b).unwrap()
+                    )));
+                }
+            }
+        }
+
+        self.increment_op(op_name.to_string());
+
+        let qubits_id = Interner::intern(&mut self.qargs_cache, op.qubits)?;
+        let clbits_id = Interner::intern(&mut self.cargs_cache, op.clbits)?;
+        let node_weight = NodeType::Operation(PackedInstruction {
+            op: op.op,
+            qubits_id,
+            clbits_id,
+            params: op.params,
+            extra_attrs: op.extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            py_op: op.py_op,
+        });
+
+        let new_node = self.dag.add_node(node_weight);
+
+        // Put the new node in-between the previously "last" nodes on each wire
+        // and the output map.
+        let output_nodes: Vec<NodeIndex> = self
+            .qargs_cache
+            .intern(qubits_id)
+            .iter()
+            .map(|q| self.qubit_output_map.get(q).copied().unwrap())
+            .chain(
+                all_cbits
+                    .iter()
+                    .map(|c| self.clbit_output_map.get(c).copied().unwrap()),
+            )
+            .chain(
+                vars.iter().map(|v| self.var_output_map.get(v).unwrap()),
+            )
+            .collect();
+
+        for output_node in output_nodes {
+            let last_edges: Vec<_> = self
+                .dag
+                .edges_directed(output_node, Incoming)
+                .map(|e| (e.source(), e.id(), *e.weight()))
+                .collect();
+            for (source, old_edge, weight) in last_edges.into_iter() {
+                self.dag.add_edge(source, new_node, weight);
+                self.dag.add_edge(new_node, output_node, weight);
+                self.dag.remove_edge(old_edge);
+            }
+        }
+
+        Ok(new_node)
     }
 
     fn topological_nodes(&self) -> PyResult<impl Iterator<Item = NodeIndex>> {
@@ -3346,30 +3704,26 @@ impl DAGCircuit {
         Ok(child == output_node)
     }
 
-    /// Return whether a given [OperationTypeConstruct] may contain any :class:`.Clbit` instances
+    /// Return whether a given instruction may contain any :class:`.Clbit` instances
     /// in itself (e.g. a control-flow operation).
     ///
     /// Args:
-    ///     operation ([OperationTypeConstruct]): the operation to check.
-    fn operation_may_have_bits(
-        &self,
-        py: Python,
-        operation: &OperationTypeConstruct,
-    ) -> PyResult<bool> {
+    ///     operation ([impl Instruction]): the operation to check.
+    fn operation_may_have_bits(&self, py: Python, operation: &impl Instruction) -> PyResult<bool> {
         // This is separate to `bits_in_operation` because most of the time there won't be any bits,
         // so we want a fast path to be able to skip creating and testing a generator for emptiness.
         //
         // If updating this, also update `DAGCirucit._bits_in_operation`.
-        let has_condition = match operation.condition {
+        let has_condition = match operation.condition() {
             None => false,
-            Some(ref condition) => !condition.bind(py).is_none(),
+            Some(condition) => !condition.bind(py).is_none(),
         };
 
         if has_condition {
             return Ok(true);
         }
 
-        if let OperationType::Instruction(ref inst) = operation.operation {
+        if let OperationType::Instruction(ref inst) = operation.op() {
             Ok(inst
                 .instruction
                 .bind(py)
@@ -3390,11 +3744,11 @@ impl DAGCircuit {
     fn bits_in_operation<'py>(
         &self,
         py: Python<'py>,
-        operation: &OperationTypeConstruct,
+        operation: &impl Instruction,
     ) -> PyResult<Vec<Bound<'py, PyAny>>> {
         let mut bits = Vec::new();
         // If updating this, also update the fast-path checker `operation_may_have_bits`.
-        if let Some(condition) = operation.condition.as_ref().map(|c| c.bind(py)) {
+        if let Some(condition) = operation.condition().map(|c| c.bind(py)) {
             if !condition.is_none() {
                 for bit in self
                     .control_flow_module
@@ -3407,7 +3761,7 @@ impl DAGCircuit {
             }
         }
 
-        if let OperationType::Instruction(ref inst) = operation.operation {
+        if let OperationType::Instruction(ref inst) = operation.op() {
             let op = inst.instruction.bind(py);
             if op.is_instance(self.circuit_module.switch_case_op.bind(py))? {
                 let target = op.getattr(intern!(py, "target"))?;
