@@ -13,11 +13,8 @@
 use crate::bit_data::BitData;
 use crate::circuit_instruction::PackedInstruction;
 use crate::circuit_instruction::{
-    convert_py_to_operation_type,
-    operation_type_and_data_to_py, 
-    CircuitInstruction,
-    ExtraInstructionAttributes,
-    OperationTypeConstruct,
+    convert_py_to_operation_type, operation_type_and_data_to_py, CircuitInstruction,
+    ExtraInstructionAttributes, OperationTypeConstruct,
 };
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::dot_utils::build_dot;
@@ -2690,6 +2687,7 @@ def _format(operand):
                     match edge.weight() {
                         Wire::Qubit(qubit) => self.qubits.get(*qubit).unwrap(),
                         Wire::Clbit(clbit) => self.clbits.get(*clbit).unwrap(),
+                        Wire::Var(var) => todo!(),
                     },
                 ))
             }
@@ -3083,7 +3081,7 @@ def _format(operand):
                         .iter()
                         .map(|clbit| self.clbits.get(*clbit)),
                 );
-                new_layer.apply_operation_back(
+                new_layer.py_apply_operation_back(
                     py,
                     node_obj.bind(py).getattr("op")?,
                     Some(TupleLikeArg { value: qubits }),
@@ -3160,7 +3158,7 @@ def _format(operand):
                     .map(|clbit| self.clbits.get(*clbit)),
             );
             // Add node to new_layers
-            new_layer.apply_operation_back(
+            new_layer.py_apply_operation_back(
                 py,
                 op.bind(py).to_owned(),
                 Some(TupleLikeArg {
@@ -3598,6 +3596,7 @@ impl DAGCircuit {
             match wire {
                 Wire::Qubit(index) => Ok(Some(index.0 as usize)),
                 Wire::Clbit(_) => Ok(None),
+                Wire::Var(_) => todo!(),
             }
         };
         rustworkx_core::dag_algo::collect_bicolor_runs(&self.dag, filter_fn, color_fn).unwrap()
