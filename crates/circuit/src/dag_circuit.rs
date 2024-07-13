@@ -2969,16 +2969,6 @@ def _format(operand):
     /// Return a list of op nodes in the first layer of this dag.
     #[pyo3(name = "front_layer")]
     fn py_front_layer(&self, py: Python) -> PyResult<Py<PyList>> {
-        // graph_layers = self.multigraph_layers()
-        // try:
-        //     next(graph_layers)  # Remove input nodes
-        // except StopIteration:
-        //     return []
-        //
-        // op_nodes = [node for node in next(graph_layers) if isinstance(node, DAGOpNode)]
-        //
-        // return op_nodes
-        // todo!()
         let native_front_layer = self.front_layer();
         let front_layer_list = PyList::empty_bound(py);
         for node in native_front_layer {
@@ -3092,24 +3082,6 @@ def _format(operand):
     /// A serial layer is a circuit with one gate. The layers have the
     /// same structure as in layers().
     fn serial_layers(&self, py: Python) -> PyResult<Py<PyIterator>> {
-        // for next_node in self.topological_op_nodes():
-        //     new_layer = self.copy_empty_like()
-        //
-        //     # Save the support of the operation we add to the layer
-        //     support_list = []
-        //     # Operation data
-        //     op = copy.copy(next_node.op)
-        //     qargs = copy.copy(next_node.qargs)
-        //     cargs = copy.copy(next_node.cargs)
-        //
-        //     # Add node to new_layer
-        //     new_layer.apply_operation_back(op, qargs, cargs, check=False)
-        //     # Add operation to partition
-        //     if not getattr(next_node.op, "_directive", False):
-        //         support_list.append(list(qargs))
-        //     l_dict = {"graph": new_layer, "partition": support_list}
-        //     yield l_dict
-        // todo!()
         let layer_list = PyList::empty_bound(py);
         for next_node in self.topological_op_nodes()? {
             let retrieved_node: &PackedInstruction = match self.dag.node_weight(next_node) {
@@ -4018,6 +3990,7 @@ impl DAGCircuit {
         Ok(dag_node)
     }
 
+    /// Returns an iterator over all the indices that refer to an `Operation` node in the `DAGCircuit.`
     pub fn op_nodes<'a>(
         &'a self,
         include_directives: bool,
@@ -4042,7 +4015,7 @@ impl DAGCircuit {
         }
     }
 
-    /// Returns an iterator over the layers of the graph.
+    /// Returns an iterator over a list layers of the `DAGCircuit``.
     pub fn multigraph_layers<'a>(&'a self) -> impl Iterator<Item = Vec<NodeIndex>> + 'a {
         let first_layer = self.qubit_input_map.values().copied().collect();
         // A DAG is by definition acyclical, therefore unwrapping the layer should never fail.
@@ -4052,6 +4025,7 @@ impl DAGCircuit {
         })
     }
 
+    /// Returns an iterator over the first layer of the `DAGCircuit``.
     pub fn front_layer<'a>(&'a self) -> Box<dyn Iterator<Item = NodeIndex> + 'a> {
         let mut graph_layers = self.multigraph_layers();
         graph_layers.next();
