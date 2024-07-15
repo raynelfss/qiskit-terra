@@ -1392,7 +1392,7 @@ def _format(operand):
         clbits: Option<Bound<PyList>>,
         front: bool,
         inplace: bool,
-    ) -> PyResult<Option<Py<PyAny>>> {
+    ) -> PyResult<Option<PyRefMut<Self>>> {
         if front {
             return Err(DAGCircuitError::new_err(
                 "Front composition not supported yet.",
@@ -1484,8 +1484,8 @@ def _format(operand):
                 .into_py_dict_bound(py)
         };
 
+        // Chck duplicates in wire map.
         {
-            // TODO: is there a better way to do this?
             let edge_map_values: Vec<_> = edge_map.values().iter().collect();
             if PySet::new_bound(py, edge_map_values.as_slice())?.len() != edge_map.len() {
                 return Err(DAGCircuitError::new_err("duplicates in wire_map"));
@@ -1514,6 +1514,74 @@ def _format(operand):
             None,
             Some(wrap_pyfunction_bound!(reject_new_register, py)?.to_object(py)),
         );
+
+        for node in other.topological_nodes()? {
+            match &other.dag[node] {
+                NodeType::QubitIn(q) => {
+                    let bit = other.qubits.get(*q).unwrap().bind(py);
+                    let m_wire = edge_map.get_item(bit)?.unwrap_or_else(|| bit.clone());
+                    let bit_in_dag = dag.qubits.find(bit);
+                    if bit_in_dag.is_none()
+                        || !dag.qubit_output_map.contains_key(&bit_in_dag.unwrap())
+                    {
+                        return Err(DAGCircuitError::new_err(format!(
+                            "wire {}[{}] not in self",
+                            m_wire.getattr("name")?,
+                            m_wire.getattr("index")?
+                        )));
+                    }
+                    // TODO: Python code has check here if node.wire is in other._wires. Why?
+                }
+                NodeType::ClbitIn(c) => {
+                    let bit = other.clbits.get(*c).unwrap().bind(py);
+                    let m_wire = edge_map.get_item(bit)?.unwrap_or_else(|| bit.clone());
+                    let bit_in_dag = dag.clbits.find(bit);
+                    if bit_in_dag.is_none()
+                        || !dag.clbit_output_map.contains_key(&bit_in_dag.unwrap())
+                    {
+                        return Err(DAGCircuitError::new_err(format!(
+                            "wire {}[{}] not in self",
+                            m_wire.getattr("name")?,
+                            m_wire.getattr("index")?
+                        )));
+                    }
+                    // TODO: Python code has check here if node.wire is in other._wires. Why?
+                }
+                NodeType::Operation(op) => {
+                    let m_qargs = {
+                        let qubits = other.qubits.map_indices(other.qargs_cache.intern(op.qubits_id).to_slice());
+                        let mut mapped = Vec::with_capacity(qubits.len());
+                        for bit in qubits {
+                            mapped.push(edge_map.get_item(bit)?.unwrap_or_else(|| bit.bind(py).clone()));
+                        }
+                        PyTuple::new_bound(py, mapped)
+                    };
+                    let m_cargs = {
+                        let clbits = other.clbits.map_indices(other.cargs_cache.intern(op.clbits_id).to_slice());
+                        let mut mapped = Vec::with_capacity(clbits.len());
+                        for bit in clbits {
+                            mapped.push(edge_map.get_item(bit)?.unwrap_or_else(|| bit.bind(py).clone()));
+                        }
+                        PyTuple::new_bound(py, mapped)
+                    };
+
+                    let py_op = if let Some(condition) = op.condition() {
+                        // TODO: do we need to check for condition.is_none()?
+                        if !op.op.control_flow() {
+                            match op.op {
+                                OperationType::Standard(_) => {}
+                                OperationType::Instruction(_) => {}
+                                OperationType::Gate(_) => {}
+                                OperationType::Operation(_) => {}
+                            }
+                        }
+                    } else {
+                        op.into_py(py)
+                    };
+                }
+                NodeType::QubitOut(_) | NodeType::ClbitOut(_) => (),
+            }
+        }
         // if qubits is None:
         //     qubit_map = identity_qubit_map
         // elif len(qubits) != len(other.qubits):
@@ -1598,7 +1666,12 @@ def _format(operand):
         //     return dag
         // else:
         //     return None
-        todo!()
+
+        if !inplace {
+            Some(dag)
+        } else {
+            None
+        }
     }
 
     /// Reverse the operations in the ``self`` circuit.
@@ -2680,6 +2753,7 @@ def _format(operand):
                     match edge.weight() {
                         Wire::Qubit(qubit) => self.qubits.get(*qubit).unwrap(),
                         Wire::Clbit(clbit) => self.clbits.get(*clbit).unwrap(),
+                        Wire::Var(var) => var,
                     },
                 ))
             }
@@ -3498,7 +3572,7 @@ impl DAGCircuit {
             let wire = self.dag.edge_weight(edge_index).unwrap();
             match wire {
                 Wire::Qubit(index) => Ok(Some(index.0 as usize)),
-                Wire::Clbit(_) => Ok(None),
+                _ => Ok(None),
             }
         };
         rustworkx_core::dag_algo::collect_bicolor_runs(&self.dag, filter_fn, color_fn).unwrap()
