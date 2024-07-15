@@ -1141,13 +1141,14 @@ def _format(operand):
     /// Returns:
     ///     DAGCircuit: An empty copy of self.
     fn copy_empty_like(&self, py: Python) -> PyResult<Self> {
-        // TODO: clone interners!
         let mut target_dag = DAGCircuit::new(py)?;
         target_dag.name = self.name.as_ref().map(|n| n.clone_ref(py));
         target_dag.global_phase = self.global_phase.clone_ref(py);
         target_dag.duration = self.duration.as_ref().map(|d| d.clone_ref(py));
         target_dag.unit = self.unit.clone();
         target_dag.metadata = self.metadata.as_ref().map(|m| m.clone_ref(py));
+        target_dag.qargs_cache = self.qargs_cache.clone();
+        target_dag.cargs_cache = self.cargs_cache.clone();
 
         for bit in self.qubits.bits() {
             target_dag.add_qubit_unchecked(py, bit.bind(py))?;
