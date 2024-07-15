@@ -11,11 +11,11 @@
 // that they have been altered from the originals.
 
 use crate::bit_data::BitData;
-use crate::circuit_instruction::PackedInstruction;
 use crate::circuit_instruction::{
     convert_py_to_operation_type, CircuitInstruction, ExtraInstructionAttributes,
     OperationTypeConstruct,
 };
+use crate::circuit_instruction::{operation_type_and_data_to_py, PackedInstruction};
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::dot_utils::build_dot;
 use crate::error::DAGCircuitError;
@@ -25,7 +25,7 @@ use crate::imports::{
 };
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
-use crate::{interner, BitType, Clbit, Qubit, SliceOrInt, TupleLikeArg};
+use crate::{interner, BitType, Clbit, Qubit, TupleLikeArg};
 use hashbrown::hash_map::DefaultHashBuilder;
 use hashbrown::{hash_map, HashMap, HashSet};
 use indexmap::set::Slice;
@@ -1392,7 +1392,7 @@ def _format(operand):
         clbits: Option<Bound<PyList>>,
         front: bool,
         inplace: bool,
-    ) -> PyResult<Option<PyRefMut<Self>>> {
+    ) -> PyResult<Option<PyObject>> {
         if front {
             return Err(DAGCircuitError::new_err(
                 "Front composition not supported yet.",
@@ -1510,10 +1510,10 @@ def _format(operand):
         let variable_mapper = PyVariableMapper::new(
             py,
             dag.cregs.bind(py).values().into_any(),
-            Some(edge_map),
+            Some(edge_map.clone()),
             None,
             Some(wrap_pyfunction_bound!(reject_new_register, py)?.to_object(py)),
-        );
+        )?;
 
         for node in other.topological_nodes()? {
             match &other.dag[node] {
@@ -1549,35 +1549,60 @@ def _format(operand):
                 }
                 NodeType::Operation(op) => {
                     let m_qargs = {
-                        let qubits = other.qubits.map_indices(other.qargs_cache.intern(op.qubits_id).to_slice());
+                        let qubits = other
+                            .qubits
+                            .map_indices(other.qargs_cache.intern(op.qubits_id).as_slice());
                         let mut mapped = Vec::with_capacity(qubits.len());
                         for bit in qubits {
-                            mapped.push(edge_map.get_item(bit)?.unwrap_or_else(|| bit.bind(py).clone()));
+                            mapped.push(
+                                edge_map
+                                    .get_item(bit)?
+                                    .unwrap_or_else(|| bit.bind(py).clone()),
+                            );
                         }
                         PyTuple::new_bound(py, mapped)
                     };
                     let m_cargs = {
-                        let clbits = other.clbits.map_indices(other.cargs_cache.intern(op.clbits_id).to_slice());
+                        let clbits = other
+                            .clbits
+                            .map_indices(other.cargs_cache.intern(op.clbits_id).as_slice());
                         let mut mapped = Vec::with_capacity(clbits.len());
                         for bit in clbits {
-                            mapped.push(edge_map.get_item(bit)?.unwrap_or_else(|| bit.bind(py).clone()));
+                            mapped.push(
+                                edge_map
+                                    .get_item(bit)?
+                                    .unwrap_or_else(|| bit.bind(py).clone()),
+                            );
                         }
                         PyTuple::new_bound(py, mapped)
                     };
 
-                    let py_op = if let Some(condition) = op.condition() {
+                    let mut py_op = op.unpack_py_op(py)?.into_bound(py);
+                    if let Some(condition) = op.condition() {
                         // TODO: do we need to check for condition.is_none()?
+                        let condition = variable_mapper.map_condition(condition.bind(py), true)?;
                         if !op.op.control_flow() {
-                            match op.op {
-                                OperationType::Standard(_) => {}
-                                OperationType::Instruction(_) => {}
-                                OperationType::Gate(_) => {}
-                                OperationType::Operation(_) => {}
-                            }
+                            py_op = py_op.call_method1(
+                                intern!(py, "c_if"),
+                                condition.downcast::<PyTuple>()?,
+                            )?;
+                        } else {
+                            py_op.setattr(intern!(py, "condition"), condition)?;
                         }
-                    } else {
-                        op.into_py(py)
+                    } else if py_op.is_instance(SWITCH_CASE_OP.get_bound(py))? {
+                        py_op.setattr(
+                            intern!(py, "target"),
+                            variable_mapper.map_target(&py_op.getattr(intern!(py, "target"))?)?,
+                        )?;
                     };
+
+                    dag.py_apply_operation_back(
+                        py,
+                        py_op,
+                        Some(TupleLikeArg { value: m_qargs }),
+                        Some(TupleLikeArg { value: m_cargs }),
+                        false,
+                    )?;
                 }
                 NodeType::QubitOut(_) | NodeType::ClbitOut(_) => (),
             }
@@ -1668,9 +1693,9 @@ def _format(operand):
         //     return None
 
         if !inplace {
-            Some(dag)
+            Ok(Some(dag.into_py(py)))
         } else {
-            None
+            Ok(None)
         }
     }
 

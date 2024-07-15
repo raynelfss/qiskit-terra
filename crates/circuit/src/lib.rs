@@ -14,19 +14,19 @@ pub mod bit_data;
 pub mod circuit_data;
 pub mod circuit_instruction;
 pub mod dag_circuit;
+pub mod dag_node;
+mod dot_utils;
+mod error;
 pub mod gate_matrix;
 pub mod imports;
+mod interner;
 pub mod operations;
 pub mod parameter_table;
 pub mod slice;
 pub mod util;
-mod dag_node;
-mod dot_utils;
-mod error;
-mod interner;
 
 use pyo3::prelude::*;
-use pyo3::types::PySlice;
+use pyo3::types::{PySequence, PySlice, PyTuple};
 use pyo3::DowncastError;
 use std::ops::Deref;
 

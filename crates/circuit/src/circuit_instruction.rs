@@ -93,7 +93,7 @@ impl PackedInstruction {
             params,
             extra_attrs,
             #[cfg(feature = "cache_pygates")]
-            py_op,
+            py_op: RefCell::new(py_op),
         }
     }
 

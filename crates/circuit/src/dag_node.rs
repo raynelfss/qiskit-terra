@@ -14,14 +14,14 @@ use crate::circuit_instruction::{
     convert_py_to_operation_type, operation_type_to_py, CircuitInstruction,
     ExtraInstructionAttributes,
 };
+use crate::imports::QUANTUM_CIRCUIT;
 use crate::operations::{Operation, OperationType, Param};
 use crate::TupleLikeArg;
-use crate::imports::QUANTUM_CIRCUIT;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySequence, PyString, PyTuple};
-use rustworkx_core::petgraph::stable_graph::NodeIndex;
 use pyo3::{intern, IntoPy, PyObject, PyResult, ToPyObject};
+use rustworkx_core::petgraph::stable_graph::NodeIndex;
 use smallvec::smallvec;
 
 /// Parent class for DAGOpNode, DAGInNode, and DAGOutNode.
@@ -106,7 +106,7 @@ impl DAGOpNode {
         op: OperationType,
         qargs: impl IntoIterator<Item = T1, IntoIter = U1>,
         cargs: impl IntoIterator<Item = T2, IntoIter = U2>,
-        params: SmallVec<[Param; 3]>,
+        params: smallvec::SmallVec<[Param; 3]>,
         extra_attrs: Option<Box<ExtraInstructionAttributes>>,
         sort_key: Py<PyAny>,
     ) -> (Self, DAGNode)
@@ -228,7 +228,7 @@ impl DAGOpNode {
             }
             None => qargs.str()?.into_any(),
         };
-        let base = PyClassInitializer::from(DAGNode { _node_id: -1 });
+        let base = PyClassInitializer::from(DAGNode { node: None });
         let sub = base.add_subclass(DAGOpNode {
             instruction,
             sort_key: sort_key.unbind(),
