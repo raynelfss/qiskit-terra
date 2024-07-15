@@ -2919,16 +2919,16 @@ def _format(operand):
 
     /// Remove all of the ancestor operation nodes of node.
     fn remove_ancestors_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        let dag_binding = self.dag.clone();
-        for ancestor in core_ancestors(&dag_binding, node.node.unwrap())
-            .filter(|next| next != &node.node.unwrap())
-            .filter(|next| match dag_binding.node_weight(*next) {
-                Some(NodeType::Operation(_)) => true,
-                _ => false,
+        let ancestors: Vec<_> = core_ancestors(&self.dag, node.node.unwrap())
+            .filter(|next| {
+                next != &node.node.unwrap()
+                    && match self.dag.node_weight(*next) {
+                        Some(NodeType::Operation(_)) => true,
+                        _ => false,
+                    }
             })
-        {
-            self.dag.remove_node(ancestor);
-        }
+            .collect();
+        ancestors.iter().map(|a| self.dag.remove_node(*a));
         Ok(())
     }
 
