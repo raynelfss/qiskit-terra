@@ -2928,58 +2928,69 @@ def _format(operand):
                     }
             })
             .collect();
-        ancestors.iter().map(|a| self.dag.remove_node(*a));
+        for a in ancestors {
+            self.dag.remove_node(a);
+        }
         Ok(())
     }
 
     /// Remove all of the descendant operation nodes of node.
     fn remove_descendants_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        let dag_binding = self.dag.clone();
-        for descendant in core_descendants(&dag_binding, node.node.unwrap())
-            .filter(|next| next != &node.node.unwrap())
-            .filter(|next| match dag_binding.node_weight(*next) {
-                Some(NodeType::Operation(_)) => true,
-                _ => false,
+        let descendants: Vec<_> = core_descendants(&self.dag, node.node.unwrap())
+            .filter(|next| {
+                next != &node.node.unwrap()
+                    && match self.dag.node_weight(*next) {
+                        Some(NodeType::Operation(_)) => true,
+                        _ => false,
+                    }
             })
-        {
-            self.dag.remove_node(descendant);
+            .collect();
+        for d in descendants {
+            self.dag.remove_node(d);
         }
         Ok(())
     }
 
     /// Remove all of the non-ancestors operation nodes of node.
     fn remove_nonancestors_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        let dag_binding = self.dag.clone();
-        let mut ancestors = core_ancestors(&dag_binding, node.node.unwrap())
-            .filter(|next| next != &node.node.unwrap())
-            .filter(|next| match dag_binding.node_weight(*next) {
-                Some(NodeType::Operation(_)) => true,
-                _ => false,
-            });
-        for node_id in dag_binding.node_indices() {
-            if ancestors.find(|anc| *anc == node_id).is_some() {
-                continue;
-            }
-            self.dag.remove_node(node_id);
+        let ancestors: Vec<_> = core_ancestors(&self.dag, node.node.unwrap())
+            .filter(|next| {
+                next != &node.node.unwrap()
+                    && match self.dag.node_weight(*next) {
+                        Some(NodeType::Operation(_)) => true,
+                        _ => false,
+                    }
+            })
+            .collect();
+        let non_ancestors: Vec<_> = self
+            .dag
+            .node_indices()
+            .filter(|node_id| ancestors.iter().find(|anc| *anc == node_id).is_none())
+            .collect();
+        for na in non_ancestors {
+            self.dag.remove_node(na);
         }
         Ok(())
     }
 
     /// Remove all of the non-descendants operation nodes of node.
     fn remove_nondescendants_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        let dag_binding = self.dag.clone();
-        let mut descendants = core_descendants(&dag_binding, node.node.unwrap())
-            .filter(|next| next != &node.node.unwrap())
-            .filter(|next| match dag_binding.node_weight(*next) {
-                Some(NodeType::Operation(_)) => true,
-                _ => false,
-            });
-
-        for node_id in dag_binding.node_indices() {
-            if descendants.find(|desc| *desc == node_id).is_some() {
-                continue;
-            }
-            self.dag.remove_node(node_id);
+        let descendants: Vec<_> = core_descendants(&self.dag, node.node.unwrap())
+            .filter(|next| {
+                next != &node.node.unwrap()
+                    && match self.dag.node_weight(*next) {
+                        Some(NodeType::Operation(_)) => true,
+                        _ => false,
+                    }
+            })
+            .collect();
+        let non_descendants: Vec<_> = self
+            .dag
+            .node_indices()
+            .filter(|node_id| descendants.iter().find(|desc| *desc == node_id).is_none())
+            .collect();
+        for nd in non_descendants {
+            self.dag.remove_node(nd);
         }
         Ok(())
     }
