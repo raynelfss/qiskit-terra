@@ -25,6 +25,7 @@ use crate::imports::{
 };
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
+use crate::rustworkx_core_vnext::isomorphism;
 use crate::{interner, BitType, Clbit, Qubit, TupleLikeArg};
 use hashbrown::hash_map::DefaultHashBuilder;
 use hashbrown::{hash_map, HashMap, HashSet};
@@ -54,6 +55,7 @@ use rustworkx_core::traversal::{
 };
 use smallvec::SmallVec;
 use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::f64::consts::PI;
@@ -2049,20 +2051,35 @@ def _format(operand):
             }
         }
 
-        todo!()
         // Check for VF2 isomorphic match.
-        // self.topological_nodes()
-        // let semantic_eq = DAG_NODE.get_bound(py).getattr(intern!(py, "semantic_eq"))?;
-        // let node_match = |n1, n2| -> bool {
-        //     semantic_eq
-        //         .call1((n1, n2, self_bit_indices, other_bit_indices)).map_or(false, |r| r.extract().unwrap_or(false))
-        // };
-        // Ok(petgraph::algo::is_isomorphic_matching(
-        //     &self.dag,
-        //     &other.dag,
-        //     node_match,
-        //     |_, _| true,
-        // ))
+        let semantic_eq = DAG_NODE.get_bound(py).getattr(intern!(py, "semantic_eq"))?;
+        let node_match = |n1: &NodeType, n2: &NodeType| -> PyResult<bool> {
+            // Note: we pretend that the node IDs are 0, since we know that semantic_eq
+            // doesn't use node IDs in its comparison. We should eventually port
+            // semantic_eq to Rust to entirely skip conversion to Python DAGNodes.
+            let n1 = self.unpack_into(py, NodeIndex::new(0), n1)?;
+            let n2 = self.unpack_into(py, NodeIndex::new(0), n2)?;
+            Ok(semantic_eq
+                .call1((n1, n2, &self_bit_indices, &other_bit_indices))?
+                .extract()?)
+        };
+
+        isomorphism::vf2::is_isomorphic(
+            &self.dag,
+            &other.dag,
+            node_match,
+            isomorphism::vf2::NoSemanticMatch,
+            true,
+            Ordering::Equal,
+            true,
+            None,
+        )
+        .map_err(|e| match e {
+            isomorphism::vf2::IsIsomorphicError::NodeMatcherErr(e) => e,
+            _ => {
+                unreachable!()
+            }
+        })
     }
 
     /// Yield nodes in topological order.

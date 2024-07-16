@@ -25,6 +25,8 @@ pub mod parameter_table;
 pub mod slice;
 pub mod util;
 
+mod rustworkx_core_vnext;
+
 use pyo3::prelude::*;
 use pyo3::types::{PySequence, PySlice, PyTuple};
 use pyo3::DowncastError;
