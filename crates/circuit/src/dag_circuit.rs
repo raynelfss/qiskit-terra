@@ -3200,29 +3200,8 @@ def _format(operand):
 
             let mut new_layer = self.copy_empty_like(py)?;
 
-            for (node, index) in &op_nodes {
-                let node_obj = self.get_node(py, **index)?;
-                let qubits = PyTuple::new_bound(
-                    py,
-                    self.qargs_cache
-                        .intern(node.qubits_id)
-                        .iter()
-                        .map(|qubit| self.qubits.get(*qubit)),
-                );
-                let clbits = PyTuple::new_bound(
-                    py,
-                    self.cargs_cache
-                        .intern(node.clbits_id)
-                        .iter()
-                        .map(|clbit| self.clbits.get(*clbit)),
-                );
-                new_layer.py_apply_operation_back(
-                    py,
-                    node_obj.bind(py).getattr("op")?,
-                    Some(TupleLikeArg { value: qubits }),
-                    Some(TupleLikeArg { value: clbits }),
-                    false,
-                )?;
+            for (node, _) in op_nodes {
+                new_layer.push_back(py, node.clone())?;
             }
 
             let new_layer_op_nodes = new_layer.op_nodes(false).filter_map(|node_index| {
@@ -3266,17 +3245,6 @@ def _format(operand):
 
             // Save the support of the operation we add to the layer
             let support_list = PyList::empty_bound(py);
-
-            // Operation_data;
-            let op = operation_type_and_data_to_py(
-                py,
-                &retrieved_node.op,
-                &retrieved_node.params,
-                None,
-                None,
-                None,
-                None,
-            )?;
             let qubits = PyTuple::new_bound(
                 py,
                 self.qargs_cache
@@ -3285,23 +3253,7 @@ def _format(operand):
                     .map(|qubit| self.qubits.get(*qubit)),
             )
             .unbind();
-            let clbits = PyTuple::new_bound(
-                py,
-                self.cargs_cache
-                    .intern(retrieved_node.clbits_id)
-                    .iter()
-                    .map(|clbit| self.clbits.get(*clbit)),
-            );
-            // Add node to new_layers
-            new_layer.py_apply_operation_back(
-                py,
-                op.bind(py).to_owned(),
-                Some(TupleLikeArg {
-                    value: qubits.bind(py).to_owned(),
-                }),
-                Some(TupleLikeArg { value: clbits }),
-                true,
-            )?;
+            new_layer.push_back(py, retrieved_node.clone())?;
 
             if !retrieved_node.op.directive() {
                 support_list.append(qubits)?;
