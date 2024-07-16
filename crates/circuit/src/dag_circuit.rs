@@ -2953,7 +2953,7 @@ def _format(operand):
 
     /// Remove all of the non-ancestors operation nodes of node.
     fn remove_nonancestors_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        let ancestors: Vec<_> = core_ancestors(&self.dag, node.node.unwrap())
+        let ancestors: HashSet<_> = core_ancestors(&self.dag, node.node.unwrap())
             .filter(|next| {
                 next != &node.node.unwrap()
                     && match self.dag.node_weight(*next) {
@@ -2965,7 +2965,7 @@ def _format(operand):
         let non_ancestors: Vec<_> = self
             .dag
             .node_indices()
-            .filter(|node_id| ancestors.iter().find(|anc| *anc == node_id).is_none())
+            .filter(|node_id| !ancestors.contains(node_id))
             .collect();
         for na in non_ancestors {
             self.dag.remove_node(na);
@@ -2975,7 +2975,7 @@ def _format(operand):
 
     /// Remove all of the non-descendants operation nodes of node.
     fn remove_nondescendants_of(&mut self, node: &DAGNode) -> PyResult<()> {
-        let descendants: Vec<_> = core_descendants(&self.dag, node.node.unwrap())
+        let descendants: HashSet<_> = core_descendants(&self.dag, node.node.unwrap())
             .filter(|next| {
                 next != &node.node.unwrap()
                     && match self.dag.node_weight(*next) {
@@ -2987,7 +2987,7 @@ def _format(operand):
         let non_descendants: Vec<_> = self
             .dag
             .node_indices()
-            .filter(|node_id| descendants.iter().find(|desc| *desc == node_id).is_none())
+            .filter(|node_id| !descendants.contains(node_id))
             .collect();
         for nd in non_descendants {
             self.dag.remove_node(nd);
