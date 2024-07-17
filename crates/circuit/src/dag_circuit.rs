@@ -555,6 +555,8 @@ impl DAGCircuit {
             ));
         }
         self.clbits = BitData::new(py, "clbits".to_string());
+        self.clbit_input_map.clear();
+        self.clbit_output_map.clear();
         self.add_clbits(py, clbits)
     }
 
@@ -2737,7 +2739,7 @@ def _format(operand):
             new_op_data.unit,
             new_condition.clone(),
             #[cfg(feature = "cache_pygates")]
-            Some(op.unbind()),
+            Some(op.clone().unbind()),
         ));
 
         // Use self.dag.contract_nodes to replace a single node with an Operation
