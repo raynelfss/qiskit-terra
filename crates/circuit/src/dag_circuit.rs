@@ -2136,9 +2136,48 @@ def _format(operand):
     ///
     /// Returns:
     ///     generator(DAGOpNode): op node in topological order
-    fn topological_op_nodes(&self, key: Option<Bound<PyAny>>) -> PyResult<Py<PyIterator>> {
+    fn topological_op_nodes(&self, py: Python, key: Option<Bound<PyAny>>) -> PyResult<Py<PyIterator>> {
         // return (nd for nd in self.topological_nodes(key) if isinstance(nd, DAGOpNode))
-        todo!()
+        let nodes: PyResult<Vec<_>> = if let Some(key) = key {
+            // This path (user provided key func) is not ideal, since we no longer
+            // use a string key after moving to Rust, in favor of using a tuple
+            // of the qargs and cargs interner IDs of the node.
+            let key = |node: NodeIndex| -> PyResult<String> {
+                let node = self.get_node(py, node)?;
+                Ok(key.call1((node,))?.extract()?)
+            };
+            rustworkx_core::dag_algo::lexicographical_topological_sort(&self.dag, key, false, None)
+                .map_err(|e| match e {
+                    rustworkx_core::dag_algo::TopologicalSortError::CycleOrBadInitialState => {
+                        PyValueError::new_err(format!("{}", e))
+                    }
+                    rustworkx_core::dag_algo::TopologicalSortError::KeyError(ref e) => {
+                        e.clone_ref(py)
+                    }
+                })?
+                .into_iter()
+                .filter_map(|index| {
+                    match self.dag[index] {
+                        NodeType::Operation(_) => Some(self.get_node(py, index)),
+                        _ => None,
+                    }
+                })
+                .collect()
+        } else {
+            self.topological_nodes()?
+                .filter_map(|index| {
+                    match self.dag[index] {
+                        NodeType::Operation(_) => Some(self.get_node(py, index)),
+                        _ => None,
+                    }
+                })
+                .collect()
+        };
+        Ok(PyTuple::new_bound(py, nodes?)
+            .into_any()
+            .iter()
+            .unwrap()
+            .unbind())
     }
 
     /// Replace a block of nodes with a single node.
