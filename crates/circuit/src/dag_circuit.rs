@@ -39,7 +39,8 @@ use rustworkx_core::graph_ext::ContractNodesDirected;
 use rustworkx_core::petgraph;
 use rustworkx_core::petgraph::prelude::StableDiGraph;
 use rustworkx_core::petgraph::stable_graph::NodeIndex;
-use rustworkx_core::petgraph::visit::{IntoEdgeReferences, IntoNodeReferences};
+use rustworkx_core::petgraph::unionfind::UnionFind;
+use rustworkx_core::petgraph::visit::{IntoEdgeReferences, IntoNodeReferences, NodeIndexable};
 use rustworkx_core::petgraph::Incoming;
 use rustworkx_core::traversal::{
     ancestors as core_ancestors, bfs_successors as core_bfs_successors,
@@ -1918,8 +1919,16 @@ def _format(operand):
 
     /// Compute how many components the circuit can decompose into.
     fn num_tensor_factors(&self) -> usize {
-        // return rx.number_weakly_connected_components(self._multi_graph)
-        todo!()
+        let mut weak_components = self.dag.node_count();
+        let mut vertex_sets = UnionFind::new(self.dag.node_bound());
+        for edge in self.dag.edge_references() {
+            let (a, b) = (edge.source(), edge.target());
+            // union the two vertices of the edge
+            if vertex_sets.union(a.index(), b.index()) {
+                weak_components -= 1
+            };
+        }
+        weak_components
     }
 
     fn __eq__(&self, py: Python, other: &DAGCircuit) -> PyResult<bool> {
