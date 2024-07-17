@@ -4250,7 +4250,7 @@ impl DAGCircuit {
                             *output.insert(self.dag.add_node(NodeType::QubitOut(qubit))),
                         ))
                     }
-                    (_, _) => Err(DAGCircuitError::new_err("wire already exists!")),
+                    (_, _) => Err(DAGCircuitError::new_err("qubit wire already exists!")),
                 }
             }
             Wire::Clbit(clbit) => {
@@ -4264,7 +4264,7 @@ impl DAGCircuit {
                             *output.insert(self.dag.add_node(NodeType::ClbitOut(clbit))),
                         ))
                     }
-                    (_, _) => Err(DAGCircuitError::new_err("wire already exists!")),
+                    (_, _) => Err(DAGCircuitError::new_err("classical wire already exists!")),
                 }
             }
             Wire::Var(_) => {
