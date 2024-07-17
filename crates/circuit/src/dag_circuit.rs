@@ -12,7 +12,7 @@
 
 use crate::bit_data::BitData;
 use crate::circuit_instruction::convert_py_to_operation_type;
-use crate::circuit_instruction::PackedInstruction;
+use crate::circuit_instruction::{operation_type_to_py, PackedInstruction};
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::dot_utils::build_dot;
 use crate::error::DAGCircuitError;
@@ -2098,7 +2098,9 @@ def _format(operand):
             return Ok(false);
         }
         for (regname, self_bits) in self_qregs {
-            let self_bits = self_bits.getattr("_bits")?.downcast_into_exact::<PyList>()?;
+            let self_bits = self_bits
+                .getattr("_bits")?
+                .downcast_into_exact::<PyList>()?;
             let other_bits = match other_qregs.get_item(regname)? {
                 Some(bits) => bits.getattr("_bits")?.downcast_into_exact::<PyList>()?,
                 None => return Ok(false),
@@ -2120,7 +2122,9 @@ def _format(operand):
         }
 
         for (regname, self_bits) in self_cregs {
-            let self_bits = self_bits.getattr("_bits")?.downcast_into_exact::<PyList>()?;
+            let self_bits = self_bits
+                .getattr("_bits")?
+                .downcast_into_exact::<PyList>()?;
             let other_bits = match other_cregs.get_item(regname)? {
                 Some(bits) => bits.getattr("_bits")?.downcast_into_exact::<PyList>()?,
                 None => return Ok(false),
@@ -2654,7 +2658,7 @@ def _format(operand):
         Ok(out_dict.unbind())
     }
 
-    /// Replace an DAGOpNode with a single operation. qargs, cargs and
+    /// Replace a DAGOpNode with a single operation. qargs, cargs and
     /// conditions for the new operation will be inferred from the node to be
     /// replaced. The new operation will be checked to match the shape of the
     /// replaced operation.
@@ -2684,71 +2688,92 @@ def _format(operand):
         op: &Bound<PyAny>,
         inplace: bool,
         propagate_condition: bool,
-    ) -> Py<PyAny> {
-        // if not isinstance(node, DAGOpNode):
-        //     raise DAGCircuitError("Only DAGOpNodes can be replaced.")
-        //
-        // if node.op.num_qubits != op.num_qubits or node.op.num_clbits != op.num_clbits:
-        //     raise DAGCircuitError(
-        //         "Cannot replace node of width ({} qubits, {} clbits) with "
-        //         "operation of mismatched width ({} qubits, {} clbits).".format(
-        //             node.op.num_qubits, node.op.num_clbits, op.num_qubits, op.num_clbits
-        //         )
-        //     )
-        //
-        // # This might include wires that are inherent to the node, like in its `condition` or
-        // # `target` fields, so might be wider than `node.op.num_{qu,cl}bits`.
-        // current_wires = {wire for _, _, wire in self.edges(node)}
-        // new_wires = set(node.qargs) | set(node.cargs)
-        // if (new_condition := getattr(op, "condition", None)) is not None:
-        //     new_wires.update(condition_resources(new_condition).clbits)
-        // elif isinstance(op, SwitchCaseOp):
-        //     if isinstance(op.target, Clbit):
-        //         new_wires.add(op.target)
-        //     elif isinstance(op.target, ClassicalRegister):
-        //         new_wires.update(op.target)
-        //     else:
-        //         new_wires.update(node_resources(op.target).clbits)
-        //
-        // if propagate_condition and not (
-        //     isinstance(node.op, ControlFlowOp) or isinstance(op, ControlFlowOp)
-        // ):
-        //     if new_condition is not None:
-        //         raise DAGCircuitError(
-        //             "Cannot propagate a condition to an operation that already has one."
-        //         )
-        //     if (old_condition := getattr(node.op, "condition", None)) is not None:
-        //         if not isinstance(op, Instruction):
-        //             raise DAGCircuitError("Cannot add a condition on a generic Operation.")
-        //         if not isinstance(node.op, ControlFlowOp):
-        //             op = op.c_if(*old_condition)
-        //         else:
-        //             op.condition = old_condition
-        //         new_wires.update(condition_resources(old_condition).clbits)
-        //
-        // if new_wires != current_wires:
-        //     # The new wires must be a non-strict subset of the current wires; if they add new wires,
-        //     # we'd not know where to cut the existing wire to insert the new dependency.
-        //     raise DAGCircuitError(
-        //         f"New operation '{op}' does not span the same wires as the old node '{node}'."
-        //         f" New wires: {new_wires}, old wires: {current_wires}."
-        //     )
-        //
-        // if inplace:
-        //     if op.name != node.op.name:
-        //         self._increment_op(op)
-        //         self._decrement_op(node.op)
-        //     node.op = op
-        //     return node
-        //
-        // new_node = copy.copy(node)
-        // new_node.op = op
-        // self._multi_graph[node._node_id] = new_node
-        // if op.name != node.op.name:
-        //     self._increment_op(op)
-        //     self._decrement_op(node.op)
-        // return new_node
-        todo!()
+    ) -> PyResult<Py<PyAny>> {
+        let py = op.py();
+        // Extract information from node that is going to be replaced
+        let old_packed = match self.dag.node_weight(node.as_ref().node.unwrap()) {
+            Some(NodeType::Operation(old_packed)) => old_packed.clone(),
+            Some(_) => {
+                return Err(DAGCircuitError::new_err(
+                    "'node' must be of type 'DAGOpNode'.",
+                ))
+            }
+            None => return Err(DAGCircuitError::new_err("'node' not found in DAG.")),
+        };
+        // Extract information from new op
+        let new_op = convert_py_to_operation_type(py, op.clone().unbind())?;
+
+        // If either operation is a control-flow operation, propagate_condition is ignored
+        let new_condition = match propagate_condition
+            && !new_op.operation.control_flow()
+            && !node.instruction.operation.control_flow()
+        {
+            true => {
+                // if new_op has a condition, the condition can't be propagated from the old node
+                if new_op.condition.is_some() {
+                    return Err(DAGCircuitError::new_err(
+                        "Cannot propagate a condition to an operation that already has one.",
+                    ));
+                } else {
+                    match &node.instruction.extra_attrs {
+                        Some(extra_attrs) => &extra_attrs.condition,
+                        None => &None,
+                    }
+                }
+            }
+            // If propagate_condition is false or ignored, the new_op condition (if any) will be used
+            false => &new_op.condition,
+        };
+
+        // Clone op data, as it will be moved into the PackedInstruction
+        let new_op_data = new_op.clone();
+        let new_weight = NodeType::Operation(PackedInstruction::new(
+            new_op_data.operation,
+            old_packed.qubits_id,
+            old_packed.clbits_id,
+            new_op_data.params,
+            new_op_data.label,
+            new_op_data.duration,
+            new_op_data.unit,
+            new_condition.clone(),
+            #[cfg(feature = "cache_pygates")]
+            Some(op.unbind()),
+        ));
+
+        // Use self.dag.contract_nodes to replace a single node with an Operation
+        // Is there a better method to do it?
+        let new_node = self
+            .dag
+            .contract_nodes(
+                Some(node.as_ref().node.unwrap()).into_iter(),
+                new_weight,
+                false,
+            )
+            .unwrap();
+
+        // Update self.op_names
+        self.decrement_op(old_packed.op.name().to_string());
+        self.increment_op(new_op.operation.name().to_string());
+
+        // If inplace==True, pretend to apply op substitution in-place, else return new node
+        if !inplace {
+            Ok(self.get_node(py, new_node)?)
+        } else {
+            Ok(operation_type_to_py(
+                py,
+                &node.instruction.replace(
+                    py,
+                    Some(new_op.operation.into()),
+                    Some(node.instruction.qubits.clone().into_any().bind(py)),
+                    Some(node.instruction.clbits.clone().into_any().bind(py)),
+                    Some(new_op.params),
+                    new_op.label,
+                    new_op.duration,
+                    new_op.unit,
+                    new_condition.clone(),
+                )?,
+            )?)
+        }
     }
 
     /// Decompose the circuit into sets of qubits with no gates connecting them.
