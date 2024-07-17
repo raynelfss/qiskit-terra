@@ -17,8 +17,8 @@ use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::dot_utils::build_dot;
 use crate::error::DAGCircuitError;
 use crate::imports::{
-    CIRCUIT_TO_DAG, CLASSICAL_REGISTER, CLBIT, CONTROL_FLOW_OP, DAG_NODE, EXPR, ITER_VARS,
-    STORE_OP, SWITCH_CASE_OP, VARIABLE_MAPPER,
+    CIRCUIT_TO_DAG, CLASSICAL_REGISTER, CLBIT, CONTROL_FLOW_OP, DAG_NODE, DAG_TO_CIRCUIT, EXPR,
+    ITER_VARS, STORE_OP, SWITCH_CASE_OP, VARIABLE_MAPPER,
 };
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
@@ -1719,16 +1719,10 @@ def _format(operand):
     ///
     /// Returns:
     ///     DAGCircuit: the reversed dag.
-    fn reverse_ops(&mut self) -> PyResult<()> {
-        // # TODO: speed up
-        // # pylint: disable=cyclic-import
-        // from qiskit.converters import dag_to_circuit, circuit_to_dag
-        //
-        // qc = dag_to_circuit(self)
-        // reversed_qc = qc.reverse_ops()
-        // reversed_dag = circuit_to_dag(reversed_qc)
-        // return reversed_dag
-        todo!()
+    fn reverse_ops<'py>(slf: PyRef<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let qc = DAG_TO_CIRCUIT.get_bound(py).call1((slf,))?;
+        let reversed = qc.call_method0("reverse_ops")?;
+        CIRCUIT_TO_DAG.get_bound(py).call1((reversed,))
     }
 
     /// Return idle wires.
