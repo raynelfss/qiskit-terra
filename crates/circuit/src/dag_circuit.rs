@@ -17,8 +17,8 @@ use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::dot_utils::build_dot;
 use crate::error::DAGCircuitError;
 use crate::imports::{
-    CLASSICAL_REGISTER, CLBIT, CONTROL_FLOW_OP, DAG_NODE, EXPR, ITER_VARS, STORE_OP,
-    SWITCH_CASE_OP, VARIABLE_MAPPER,
+    CIRCUIT_TO_DAG, CLASSICAL_REGISTER, CLBIT, CONTROL_FLOW_OP, DAG_NODE, EXPR, ITER_VARS,
+    STORE_OP, SWITCH_CASE_OP, VARIABLE_MAPPER,
 };
 use crate::interner::{Index, IndexedInterner, Interner};
 use crate::operations::{Operation, OperationType, Param};
@@ -52,6 +52,8 @@ use std::convert::Infallible;
 use std::f64::consts::PI;
 use std::ffi::c_double;
 use std::hash::Hash;
+
+static CONTROL_FLOW_OP_NAMES: [&str; 4] = ["for_loop", "while_loop", "if_else", "switch_case"];
 
 trait IntoUnique {
     type Output;
@@ -3438,23 +3440,43 @@ def _format(operand):
     /// Returns:
     ///     Mapping[str, int]: a mapping of operation names to the number of times it appears.
     #[pyo3(signature = (*, recurse=true))]
-    fn count_ops(&self, recurse: bool) -> PyResult<usize> {
-        // if not recurse or not CONTROL_FLOW_OP_NAMES.intersection(self._op_names):
-        //     return self._op_names.copy()
-        //
-        // # pylint: disable=cyclic-import
-        // from qiskit.converters import circuit_to_dag
-        //
-        // def inner(dag, counts):
-        //     for name, count in dag._op_names.items():
-        //         counts[name] += count
-        //     for node in dag.op_nodes(ControlFlowOp):
-        //         for block in node.op.blocks:
-        //             counts = inner(circuit_to_dag(block), counts)
-        //     return counts
-        //
-        // return dict(inner(self, defaultdict(int)))
-        todo!()
+    fn count_ops(&self, py: Python, recurse: bool) -> PyResult<PyObject> {
+        if !recurse
+            || !CONTROL_FLOW_OP_NAMES
+                .iter()
+                .any(|x| self.op_names.contains_key(&x.to_string()))
+        {
+            Ok(self.op_names.to_object(py))
+        } else {
+            fn inner(
+                py: Python,
+                dag: &DAGCircuit,
+                counts: &mut HashMap<String, usize>,
+            ) -> PyResult<()> {
+                for (key, value) in dag.op_names.iter() {
+                    counts
+                        .entry(key.clone())
+                        .and_modify(|count| *count += value)
+                        .or_insert(*value);
+                }
+                let circuit_to_dag = CIRCUIT_TO_DAG.get_bound(py);
+                for node in
+                    dag.op_nodes(py, Some(CONTROL_FLOW_OP.get_bound(py).downcast()?), true)?
+                {
+                    let raw_blocks = node.getattr(py, "op")?.getattr(py, "blocks")?;
+                    let blocks: &Bound<PyList> = raw_blocks.downcast_bound::<PyList>(py)?;
+                    for block in blocks.iter() {
+                        let inner_dag: &DAGCircuit =
+                            &circuit_to_dag.call1((node.clone_ref(py),))?.extract()?;
+                        inner(py, inner_dag, counts)?;
+                    }
+                }
+                Ok(())
+            }
+            let mut counts = HashMap::with_capacity(self.op_names.len());
+            inner(py, self, &mut counts)?;
+            Ok(counts.to_object(py))
+        }
     }
 
     /// Count the occurrences of operation names on the longest path.
@@ -3573,7 +3595,7 @@ def _format(operand):
             ("qubits", self.num_qubits()),
             ("bits", self.num_clbits()),
             ("factors", self.num_tensor_factors()),
-            ("operations", self.count_ops(true)?),
+            //          ("operations", self.count_ops(true)?),
         ]);
         Ok(summary)
     }
