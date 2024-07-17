@@ -13,7 +13,7 @@
 use std::f64::consts::PI;
 
 use crate::circuit_data::CircuitData;
-use crate::imports::{DEEPCOPY, PARAMETER_EXPRESSION, QUANTUM_CIRCUIT, CONTROL_FLOW_OP};
+use crate::imports::{CONTROL_FLOW_OP, DEEPCOPY, PARAMETER_EXPRESSION, QUANTUM_CIRCUIT};
 use crate::{gate_matrix, Qubit};
 
 use ndarray::{aview2, Array2};
@@ -2016,7 +2016,10 @@ impl Operation for PyInstruction {
     }
     fn control_flow(&self) -> bool {
         Python::with_gil(|py| -> bool {
-            self.instruction.bind(py).is_instance(CONTROL_FLOW_OP.get_bound(py)).unwrap()
+            self.instruction
+                .bind(py)
+                .is_instance(CONTROL_FLOW_OP.get_bound(py))
+                .unwrap()
         })
     }
     fn matrix(&self, _params: &[Param]) -> Option<Array2<Complex64>> {
