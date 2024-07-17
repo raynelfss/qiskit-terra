@@ -1803,19 +1803,11 @@ def _format(operand):
     ///         ``recurse=True``, or any control flow is present in a non-recursive call.
     #[pyo3(signature= (*, recurse=false))]
     fn size(&self, py: Python, recurse: bool) -> PyResult<usize> {
-        let length = self.dag.node_count() - self.width() * 2;
+        let mut length = self.dag.node_count() - self.width() * 2;
         if !recurse {
-            // TODO: do this once in module struct `new`.
-            let control_flow_op_names: PyResult<Vec<String>> = self
-                .control_flow_module
-                .control_flow_op_names
-                .bind(py)
+            if CONTROL_FLOW_OP_NAMES
                 .iter()
-                .map(|s| s.extract())
-                .collect();
-            if control_flow_op_names?
-                .into_iter()
-                .any(|n| self.op_names.contains_key(&n))
+                .any(|n| self.op_names.contains_key(&n.to_string()))
             {
                 return Err(DAGCircuitError::new_err(concat!(
                     "Size with control flow is ambiguous.",
@@ -1826,32 +1818,43 @@ def _format(operand):
             return Ok(length);
         }
 
-        // length = len(self._multi_graph) - 2 * len(self._wires)
-        // if not recurse:
-        //     if any(x in self._op_names for x in CONTROL_FLOW_OP_NAMES):
-        //         raise DAGCircuitError(
-        //             "Size with control flow is ambiguous."
-        //             " You may use `recurse=True` to get a result,"
-        //             " but see this method's documentation for the meaning of this."
-        //         )
-        //     return length
-        // # pylint: disable=cyclic-import
-        // from qiskit.converters import circuit_to_dag
-        //
-        // for node in self.op_nodes(ControlFlowOp):
-        //     if isinstance(node.op, ForLoopOp):
-        //         indexset = node.op.params[0]
-        //         inner = len(indexset) * circuit_to_dag(node.op.blocks[0]).size(recurse=True)
-        //     elif isinstance(node.op, WhileLoopOp):
-        //         inner = circuit_to_dag(node.op.blocks[0]).size(recurse=True)
-        //     elif isinstance(node.op, (IfElseOp, SwitchCaseOp)):
-        //         inner = sum(circuit_to_dag(block).size(recurse=True) for block in node.op.blocks)
-        //     else:
-        //         raise DAGCircuitError(f"unknown control-flow type: '{node.op.name}'")
-        //     # Replace the "1" for the node itself with the actual count.
-        //     length += inner - 1
-        // return length
-        todo!()
+        let circuit_to_dag = CIRCUIT_TO_DAG.get_bound(py);
+
+        for node in self.op_nodes(py, Some(CONTROL_FLOW_OP.get_bound(py).downcast()?), true)? {
+            let node = node.bind(py);
+            let inner = if node.is_instance(self.circuit_module.for_loop_op.bind(py))? {
+                let indexset = node.getattr("params")?.get_item(0)?;
+                let raw_blocks = node.getattr("op")?.getattr("blocks")?;
+                let blocks: &Bound<PyList> = raw_blocks.downcast::<PyList>()?;
+                let block_zero = blocks.get_item(0)?;
+                let inner_dag: &DAGCircuit =
+                    &circuit_to_dag.call1((block_zero.clone(),))?.extract()?;
+                indexset.len()? * inner_dag.size(py, true)?
+            } else if node.is_instance(self.circuit_module.while_loop_op.bind(py))? {
+                let raw_blocks = node.getattr("op")?.getattr("blocks")?;
+                let blocks: &Bound<PyList> = raw_blocks.downcast::<PyList>()?;
+                let block_zero = blocks.get_item(0)?;
+                let inner_dag: &DAGCircuit =
+                    &circuit_to_dag.call1((block_zero.clone(),))?.extract()?;
+                inner_dag.size(py, true)?
+            } else if node.is_instance(self.circuit_module.if_else_op.bind(py))?
+                || node.is_instance(self.circuit_module.switch_case_op.bind(py))?
+            {
+                let raw_blocks = node.getattr("op")?.getattr("blocks")?;
+                let blocks: &Bound<PyList> = raw_blocks.downcast::<PyList>()?;
+                let mut inner_ops = 0;
+                for block in blocks.iter() {
+                    let inner_dag: &DAGCircuit =
+                        &circuit_to_dag.call1((block.clone(),))?.extract()?;
+                    inner_ops += inner_dag.size(py, true)?;
+                }
+                inner_ops
+            } else {
+                return Err(DAGCircuitError::new_err("unknown control-flow type"));
+            };
+            length += inner - 1
+        }
+        Ok(length)
     }
 
     /// Return the circuit depth.  If there is control flow present, this count may only be an
@@ -1894,8 +1897,7 @@ def _format(operand):
                     let blocks: &Bound<PyList> = raw_blocks.downcast::<PyList>()?;
                     let mut block_weights: Vec<usize> = Vec::with_capacity(blocks.len());
                     for block in blocks.iter() {
-                        let inner_dag: &DAGCircuit =
-                            &circuit_to_dag.call1((node.clone(),))?.extract()?;
+                        let inner_dag: &DAGCircuit = &circuit_to_dag.call1((block,))?.extract()?;
                         block_weights.push(inner_dag.depth(py, true)?);
                     }
                     node_lookup.insert(node_index, weight * block_weights.iter().max().unwrap());
