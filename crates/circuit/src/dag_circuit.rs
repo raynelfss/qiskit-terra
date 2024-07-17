@@ -2916,12 +2916,17 @@ def _format(operand):
     }
 
     /// Get the set of "op" nodes with the given name.
-    fn named_nodes(&self, py: Python<'_>, names: Vec<String>) -> PyResult<Vec<Py<PyAny>>> {
+    #[pyo3(signature = (*names))]
+    fn named_nodes(&self, py: Python<'_>, names: &Bound<PyTuple>) -> PyResult<Vec<Py<PyAny>>> {
+        let mut names_set: HashSet<String> = HashSet::with_capacity(names.len());
+        for name_obj in names.iter() {
+            names_set.insert(name_obj.extract::<String>()?);
+        }
         let mut result: Vec<Py<PyAny>> = Vec::new();
         for (id, weight) in self.dag.node_references() {
             if let NodeType::Operation(ref packed) = weight {
                 let name = packed.op.name();
-                if names.contains(&name.to_string()) {
+                if names_set.contains(&name.to_string()) {
                     result.push(self.unpack_into(py, id, weight)?);
                 }
             }
