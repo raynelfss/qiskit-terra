@@ -511,9 +511,9 @@ impl DAGCircuit {
         self.qubits.cached().clone_ref(py)
     }
 
-    // This is really bad and quite unsound, but it was supported in the Python api so we continue
-    // to support setting the qubits list directly. This adds some guard rails to ensure we can't
-    // corrupt things too horribly
+    // This is really bad and quite unsound, but it was supported in the Python api (and just as
+    // bad there) so we continue to support setting the qubits list directly. This adds some guard rails
+    // to ensure we can't corrupt things too horribly
     #[setter]
     pub fn set_qubits(&mut self, py: Python, qubits: &Bound<PySequence>) -> PyResult<()> {
         let current_qubits = self.qubits.cached().bind(py);
@@ -521,13 +521,6 @@ impl DAGCircuit {
             return Err(DAGCircuitError::new_err(
                 "New qubits don't match the length of old qubits",
             ));
-        }
-        for qubit in qubits.iter() {
-            if !current_qubits.contains(qubit)? {
-                return Err(DAGCircuitError::new_err(
-                    "Adding new qubit objects isn't supported via the setter use .add_qubits() instead"
-                ));
-            }
         }
         self.qubits = BitData::new(py, "qubits".to_string());
         self.add_qubits(py, qubits)
@@ -548,9 +541,9 @@ impl DAGCircuit {
         self.clbits.cached().clone_ref(py)
     }
 
-    // This is really bad and quite unsound, but it was supported in the Python api so we continue
-    // to support setting the clbits list directly. This adds some guard rails to ensure we can't
-    // corrupt things too horribly
+    // This is really bad and quite unsound, but it was supported in the Python api (and just as
+    // bad there) so we continue to support setting the clbits list directly. This adds some guard rails
+    // to ensure we can't corrupt things too horribly
     #[setter]
     pub fn set_clbits(&mut self, py: Python, clbits: &Bound<PySequence>) -> PyResult<()> {
         let current_clbits = self.clbits.cached().bind(py);
@@ -558,13 +551,6 @@ impl DAGCircuit {
             return Err(DAGCircuitError::new_err(
                 "New qubits don't match the length of old qubits",
             ));
-        }
-        for clbit in clbits.iter() {
-            if !current_clbits.contains(clbit)? {
-                return Err(DAGCircuitError::new_err(
-                    "Adding new qubit objects isn't supported via the setter use .add_clbits() instead"
-                ));
-            }
         }
         self.clbits = BitData::new(py, "clbits".to_string());
         self.add_clbits(py, clbits)
@@ -2569,7 +2555,7 @@ def _format(operand):
                                 self.clbits.find(&target_wire).unwrap(),
                             );
                         } else {
-                            todo!("Handle Vars")
+                            var_map.set_item(source_wire, target_wire)?;
                         }
                     }
                     (qubit_wire_map, clbit_wire_map, var_map.unbind())
@@ -2580,7 +2566,7 @@ def _format(operand):
                 }
             },
             None => {
-                let raw_wires = self.get_wires(py);
+                let raw_wires = input_dag.get_wires(py);
                 let wires = raw_wires.bind(py);
                 build_wire_map(wires)?
             }
