@@ -38,7 +38,7 @@ use rustworkx_core::err::ContractError;
 use rustworkx_core::graph_ext::ContractNodesDirected;
 use rustworkx_core::petgraph;
 use rustworkx_core::petgraph::prelude::StableDiGraph;
-use rustworkx_core::petgraph::stable_graph::NodeIndex;
+use rustworkx_core::petgraph::stable_graph::{EdgeReference, NodeIndex};
 use rustworkx_core::petgraph::unionfind::UnionFind;
 use rustworkx_core::petgraph::visit::{IntoEdgeReferences, IntoNodeReferences, NodeIndexable};
 use rustworkx_core::petgraph::Incoming;
@@ -1880,38 +1880,55 @@ def _format(operand):
     ///     DAGCircuitError: if unknown control flow is present in a recursive call, or any control
     ///         flow is present in a non-recursive call.
     #[pyo3(signature= (*, recurse=false))]
-    fn depth(&self, recurse: bool) -> PyResult<usize> {
-        // if recurse:
-        //     from qiskit.converters import circuit_to_dag  # pylint: disable=cyclic-import
-        //
-        //     node_lookup = {}
-        //     for node in self.op_nodes(ControlFlowOp):
-        //         weight = len(node.op.params[0]) if isinstance(node.op, ForLoopOp) else 1
-        //         if weight == 0:
-        //             node_lookup[node._node_id] = 0
-        //         else:
-        //             node_lookup[node._node_id] = weight * max(
-        //                 circuit_to_dag(block).depth(recurse=True) for block in node.op.blocks
-        //             )
-        //
-        //     def weight_fn(_source, target, _edge):
-        //         return node_lookup.get(target, 1)
-        //
-        // else:
-        //     if any(x in self._op_names for x in CONTROL_FLOW_OP_NAMES):
-        //         raise DAGCircuitError(
-        //             "Depth with control flow is ambiguous."
-        //             " You may use `recurse=True` to get a result,"
-        //             " but see this method's documentation for the meaning of this."
-        //         )
-        //     weight_fn = None
-        //
-        // try:
-        //     depth = rx.dag_longest_path_length(self._multi_graph, weight_fn) - 1
-        // except rx.DAGHasCycle as ex:
-        //     raise DAGCircuitError("not a DAG") from ex
-        // return depth if depth >= 0 else 0
-        todo!()
+    fn depth(&self, py: Python, recurse: bool) -> PyResult<usize> {
+        Ok(if recurse {
+            let circuit_to_dag = CIRCUIT_TO_DAG.get_bound(py);
+            let mut node_lookup: HashMap<NodeIndex, usize> = HashMap::new();
+
+            for node in self.op_nodes(py, Some(CONTROL_FLOW_OP.get_bound(py).downcast()?), true)? {
+                let node = node.bind(py);
+                let weight = if node.is_instance(self.circuit_module.for_loop_op.bind(py))? {
+                    node.getattr("params")?.get_item(0)?.len()?
+                } else {
+                    1
+                };
+                let node_index = node.extract::<DAGNode>()?.node.unwrap();
+                if weight == 0 {
+                    node_lookup.insert(node_index, 0);
+                } else {
+                    let raw_blocks = node.getattr("op")?.getattr("blocks")?;
+                    let blocks: &Bound<PyList> = raw_blocks.downcast::<PyList>()?;
+                    let mut block_weights: Vec<usize> = Vec::with_capacity(blocks.len());
+                    for block in blocks.iter() {
+                        let inner_dag: &DAGCircuit =
+                            &circuit_to_dag.call1((node.clone(),))?.extract()?;
+                        block_weights.push(inner_dag.depth(py, true)?);
+                    }
+                    node_lookup.insert(node_index, weight * block_weights.iter().max().unwrap());
+                }
+            }
+
+            let weight_fn = |edge: EdgeReference<'_, Wire>| -> Result<usize, Infallible> {
+                Ok(*node_lookup.get(&edge.target()).unwrap_or(&1))
+            };
+            match rustworkx_core::dag_algo::longest_path(&self.dag, weight_fn).unwrap() {
+                Some(res) => res.1,
+                None => return Err(DAGCircuitError::new_err("not a DAG")),
+            }
+        } else {
+            if CONTROL_FLOW_OP_NAMES
+                .iter()
+                .any(|x| self.op_names.contains_key(&x.to_string()))
+            {
+                return Err(DAGCircuitError::new_err("Depth with control flow is ambiguous. You may use `recurse=True` to get a result, but see this method's documentation for the meaning of this."));
+            }
+
+            let weight_fn = |_| -> Result<usize, Infallible> { Ok(1) };
+            match rustworkx_core::dag_algo::longest_path(&self.dag, weight_fn).unwrap() {
+                Some(res) => res.1,
+                None => return Err(DAGCircuitError::new_err("not a DAG")),
+            }
+        } - 1)
     }
 
     /// Return the total number of qubits + clbits used by the circuit.
@@ -3590,7 +3607,7 @@ def _format(operand):
     fn properties(&self, py: Python) -> PyResult<HashMap<&str, usize>> {
         let mut summary = HashMap::from_iter([
             ("size", self.size(py, false)?),
-            ("depth", self.depth(false)?),
+            ("depth", self.depth(py, false)?),
             ("width", self.width()),
             ("qubits", self.num_qubits()),
             ("bits", self.num_clbits()),
