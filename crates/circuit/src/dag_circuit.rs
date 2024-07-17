@@ -2096,9 +2096,9 @@ def _format(operand):
             return Ok(false);
         }
         for (regname, self_bits) in self_qregs {
-            let self_bits = self_bits.downcast_into_exact::<PyList>()?;
+            let self_bits = self_bits.getattr("_bits")?.downcast_into_exact::<PyList>()?;
             let other_bits = match other_qregs.get_item(regname)? {
-                Some(bits) => bits.downcast_into_exact::<PyList>()?,
+                Some(bits) => bits.getattr("_bits")?.downcast_into_exact::<PyList>()?,
                 None => return Ok(false),
             };
             if !self
@@ -2118,9 +2118,9 @@ def _format(operand):
         }
 
         for (regname, self_bits) in self_cregs {
-            let self_bits = self_bits.downcast_into_exact::<PyList>()?;
+            let self_bits = self_bits.getattr("_bits")?.downcast_into_exact::<PyList>()?;
             let other_bits = match other_cregs.get_item(regname)? {
-                Some(bits) => bits.downcast_into_exact::<PyList>()?,
+                Some(bits) => bits.getattr("_bits")?.downcast_into_exact::<PyList>()?,
                 None => return Ok(false),
             };
             if !self
