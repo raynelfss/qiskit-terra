@@ -899,7 +899,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a clbit is not a :obj:`.Clbit`, is not in the circuit,
     ///         or is not idle.
-    #[pyo3(signature = (* clbits))]
+    #[pyo3(signature = (*clbits))]
     fn remove_clbits(&mut self, py: Python, clbits: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_bits = Vec::new();
         for bit in clbits.iter() {
@@ -970,7 +970,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a creg is not a ClassicalRegister, or is not in
     ///     the circuit.
-    #[pyo3(signature = (* cregs))]
+    #[pyo3(signature = (*cregs))]
     fn remove_cregs(&mut self, py: Python, cregs: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_regs = Vec::new();
         let mut unknown_regs = Vec::new();
@@ -1028,7 +1028,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a qubit is not a :obj:`~.circuit.Qubit`, is not in the circuit,
     ///         or is not idle.
-    #[pyo3(signature = (* qubits))]
+    #[pyo3(signature = (*qubits))]
     fn remove_qubits(&mut self, py: Python, qubits: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_bits = Vec::new();
         for bit in qubits.iter() {
@@ -1099,7 +1099,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: a qreg is not a QuantumRegister, or is not in
     ///     the circuit.
-    #[pyo3(signature = (* qregs))]
+    #[pyo3(signature = (*qregs))]
     fn remove_qregs(&mut self, py: Python, qregs: &Bound<PyTuple>) -> PyResult<()> {
         let mut non_regs = Vec::new();
         let mut unknown_regs = Vec::new();
@@ -1442,7 +1442,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if ``other`` is wider or there are duplicate edge mappings.
-    #[pyo3(signature = (other, qubits = None, clbits = None, front = false, inplace = true))]
+    #[pyo3(signature = (other, qubits=None, clbits=None, front=false, inplace=true))]
     fn compose(
         slf: PyRefMut<Self>,
         py: Python,
@@ -2310,7 +2310,7 @@ def _format(operand):
     ///
     /// Returns:
     ///     DAGOpNode: The op node that replaces the block.
-    #[pyo3(signature = (node_block, op, wire_pos_map, cycle_check = true))]
+    #[pyo3(signature = (node_block, op, wire_pos_map, cycle_check=true))]
     fn replace_block_with_op(
         &mut self,
         py: Python,
@@ -2479,7 +2479,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if met with unexpected predecessor/successors
-    #[pyo3(signature = (node, input_dag, wires = None, propagate_condition = true))]
+    #[pyo3(signature = (node, input_dag, wires=None, propagate_condition=true))]
     fn substitute_node_with_dag(
         &mut self,
         py: Python,
@@ -2681,7 +2681,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: If replacement operation was incompatible with
     ///     location of target node.
-    #[pyo3(signature = (node, op, inplace = false, propagate_condition = true))]
+    #[pyo3(signature = (node, op, inplace=false, propagate_condition=true))]
     fn substitute_node(
         &mut self,
         node: PyRefMut<DAGOpNode>,
@@ -2790,7 +2790,7 @@ def _format(operand):
     /// Each :class:`~.DAGCircuit` instance returned by this method will contain the same number of
     /// clbits as ``self``. The global phase information in ``self`` will not be maintained
     /// in the subcircuits returned by this method.
-    #[pyo3(signature = (remove_idle_qubits = false))]
+    #[pyo3(signature = (remove_idle_qubits=false))]
     fn separable_circuits(&self, remove_idle_qubits: bool) -> Py<PyList> {
         // connected_components = rx.weakly_connected_components(self._multi_graph)
         //
@@ -2949,7 +2949,7 @@ def _format(operand):
     ///
     /// Returns:
     ///     list[DAGOpNode]: the list of node ids containing the given op.
-    #[pyo3(signature = (op = None, include_directives = true))]
+    #[pyo3(signature=(op=None, include_directives=true))]
     fn op_nodes(
         &self,
         py: Python,
@@ -3492,7 +3492,7 @@ def _format(operand):
     ///
     /// Raises:
     ///     DAGCircuitError: if the given wire doesn't exist in the DAG
-    #[pyo3(name = "nodes_on_wire", signature = (wire, only_ops = false))]
+    #[pyo3(name = "nodes_on_wire", signature = (wire, only_ops=false))]
     fn py_nodes_on_wire(
         &self,
         py: Python,
