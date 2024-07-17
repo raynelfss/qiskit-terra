@@ -202,10 +202,14 @@ impl _VarIndexMap {
 #[pyclass(module = "qiskit._accelerate.circuit")]
 #[derive(Clone, Debug)]
 pub struct DAGCircuit {
+    /// Circuit name.  Generally, this corresponds to the name
+    /// of the QuantumCircuit from which the DAG was generated.
     #[pyo3(get, set)]
     name: Option<Py<PyString>>,
+    /// Circuit metadata
     #[pyo3(get, set)]
     metadata: Option<Py<PyDict>>,
+
     calibrations: HashMap<String, Py<PyDict>>,
 
     pub(crate) dag: StableDiGraph<NodeType, Wire>,
@@ -263,6 +267,8 @@ pub struct DAGCircuit {
     // Python modules we need to frequently access (for now).
     control_flow_module: PyControlFlowModule,
     circuit_module: PyCircuitModule,
+    vars_info: HashMap<String, PyObject>,
+    vars_by_type: [Py<PySet>; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -432,6 +438,12 @@ struct BitLocations {
     registers: Py<PyList>,
 }
 
+enum DAGVarType {
+    INPUT = 0,
+    CAPTURE = 1,
+    DECLARE = 2,
+}
+
 #[pymethods]
 impl DAGCircuit {
     #[new]
@@ -463,6 +475,12 @@ impl DAGCircuit {
             // Python module wrappers
             control_flow_module: PyControlFlowModule::new(py)?,
             circuit_module: PyCircuitModule::new(py)?,
+            vars_info: HashMap::new(),
+            vars_by_type: [
+                PySet::empty_bound(py)?.unbind(),
+                PySet::empty_bound(py)?.unbind(),
+                PySet::empty_bound(py)?.unbind(),
+            ],
         })
     }
 
@@ -3602,6 +3620,71 @@ def _format(operand):
         build_dot(py, self, &mut buffer, graph_attrs, node_attrs, edge_attrs)?;
         Ok(PyString::new_bound(py, std::str::from_utf8(&buffer)?))
     }
+
+    #[getter]
+    fn num_vars(&self) -> usize {
+        self.vars_info.len()
+    }
+
+    #[getter]
+    fn num_input_vars(&self, py: Python) -> usize {
+        self.vars_by_type[DAGVarType::INPUT as usize].bind(py).len()
+    }
+
+    #[getter]
+    fn num_captured_vars(&self, py: Python) -> usize {
+        self.vars_by_type[DAGVarType::CAPTURE as usize]
+            .bind(py)
+            .len()
+    }
+
+    #[getter]
+    fn num_declared_vars(&self, py: Python) -> usize {
+        self.vars_by_type[DAGVarType::DECLARE as usize]
+            .bind(py)
+            .len()
+    }
+
+    fn has_var(&self, var: &Bound<PyAny>) -> PyResult<bool> {
+        match var.extract::<String>() {
+            Ok(name) => Ok(self.vars_info.contains_key(&name)),
+            Err(_) => {
+                let raw_name = var.getattr("name")?;
+                let var_name: String = raw_name.extract()?;
+                match self.vars_info.get(&var_name) {
+                    Some(var_in_dag) => Ok(var_in_dag.is(var)),
+                    None => Ok(false),
+                }
+            }
+        }
+    }
+
+    fn iter_input_vars<'py>(&self, py: Python) -> PyResult<Py<PyIterator>> {
+        Ok(self.vars_by_type[DAGVarType::INPUT as usize]
+            .bind(py)
+            .clone()
+            .into_any()
+            .iter()?
+            .unbind())
+    }
+
+    fn iter_captured_vars<'py>(&self, py: Python<'py>) -> PyResult<Py<PyIterator>> {
+        Ok(self.vars_by_type[DAGVarType::CAPTURE as usize]
+            .bind(py)
+            .clone()
+            .into_any()
+            .iter()?
+            .unbind())
+    }
+
+    fn iter_declared_vars<'py>(&self, py: Python<'py>) -> PyResult<Py<PyIterator>> {
+        Ok(self.vars_by_type[DAGVarType::DECLARE as usize]
+            .bind(py)
+            .clone()
+            .into_any()
+            .iter()?
+            .unbind())
+    }
 }
 
 impl DAGCircuit {
@@ -4069,7 +4152,15 @@ impl DAGCircuit {
                     (_, _) => Err(DAGCircuitError::new_err("wire already exists!")),
                 }
             }
-            Wire::Var(_) => todo!(),
+            Wire::Var(_) => {
+                // in_node = DAGInNode(wire=var)
+                // out_node = DAGOutNode(wire=var)
+                // in_node._node_id, out_node._node_id = self._multi_graph.add_nodes_from((in_node, out_node))
+                // self._multi_graph.add_edge(in_node._node_id, out_node._node_id, var)
+                // self.input_map[var] = in_node
+                // self.output_map[var] = out_node
+                todo!()
+            }
         }?;
 
         self.dag.add_edge(in_node, out_node, wire);
