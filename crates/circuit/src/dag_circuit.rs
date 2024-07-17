@@ -3827,6 +3827,11 @@ def _format(operand):
             .iter()?
             .unbind())
     }
+
+    fn _has_edge(&self, source: usize, target: usize) -> bool {
+        self.dag
+            .contains_edge(NodeIndex::new(source), NodeIndex::new(target))
+    }
 }
 
 impl DAGCircuit {
