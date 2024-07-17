@@ -523,6 +523,8 @@ impl DAGCircuit {
             ));
         }
         self.qubits = BitData::new(py, "qubits".to_string());
+        self.qubit_input_map.clear();
+        self.qubit_output_map.clear();
         self.add_qubits(py, qubits)
     }
 
