@@ -15,7 +15,7 @@ use crate::circuit_instruction::{
     convert_py_to_operation_type, CircuitInstruction, ExtraInstructionAttributes,
     OperationTypeConstruct,
 };
-use crate::circuit_instruction::{operation_type_and_data_to_py, PackedInstruction};
+use crate::circuit_instruction::{operation_type_to_py, PackedInstruction};
 use crate::dag_node::{DAGInNode, DAGNode, DAGOpNode, DAGOutNode};
 use crate::dot_utils::build_dot;
 use crate::error::DAGCircuitError;
@@ -2580,8 +2580,20 @@ def _format(operand):
         propagate_condition: bool,
     ) -> PyResult<Py<PyAny>> {
         let py = op.py();
+        // Extract information from node that is going to be replaced
+        let old_packed = match self.dag.node_weight(node.as_ref().node.unwrap()) {
+            Some(NodeType::Operation(old_packed)) => old_packed.clone(),
+            Some(_) => {
+                return Err(DAGCircuitError::new_err(
+                    "'node' must be of type 'DAGOpNode'.",
+                ))
+            }
+            None => return Err(DAGCircuitError::new_err("'node' not found in DAG.")),
+        };
+        // Extract information from new op
         let new_op = convert_py_to_operation_type(py, op.clone().unbind())?;
-        // if either node is a control-flow operation, propagate_condition is ignored
+
+        // If either operation is a control-flow operation, propagate_condition is ignored
         let new_condition = match propagate_condition
             && !new_op.operation.control_flow()
             && !node.instruction.operation.control_flow()
@@ -2599,61 +2611,58 @@ def _format(operand):
                     }
                 }
             }
-            // if propagate_condition is false or ignored, the new_op condition (if any) will be used
+            // If propagate_condition is false or ignored, the new_op condition (if any) will be used
             false => &new_op.condition,
         };
-        let old_id = node.as_ref().node.unwrap();
-        match self.dag.clone().node_weight(old_id) {
-            Some(NodeType::Operation(old_packed)) => {
-                let new_weight = NodeType::Operation(PackedInstruction::new(
-                    new_op.operation,
-                    old_packed.qubits_id,
-                    old_packed.clbits_id,
-                    new_op.params,
+
+        // Clone op data, as it will be moved into the PackedInstruction
+        let new_op_data = new_op.clone();
+        let new_weight = NodeType::Operation(PackedInstruction::new(
+            new_op_data.operation,
+            old_packed.qubits_id,
+            old_packed.clbits_id,
+            new_op_data.params,
+            new_op_data.label,
+            new_op_data.duration,
+            new_op_data.unit,
+            new_condition.clone(),
+            #[cfg(feature = "cache_pygates")]
+            Some(op.unbind()),
+        ));
+
+        // Use self.dag.contract_nodes to replace a single node with an Operation
+        // Is there a better method to do it?
+        let new_node = self
+            .dag
+            .contract_nodes(
+                Some(node.as_ref().node.unwrap()).into_iter(),
+                new_weight,
+                false,
+            )
+            .unwrap();
+
+        // Update self.op_names
+        self.decrement_op(old_packed.op.name().to_string());
+        self.increment_op(new_op.operation.name().to_string());
+
+        // If inplace==True, pretend to apply op substitution in-place, else return new node
+        if !inplace {
+            Ok(self.get_node(py, new_node)?)
+        } else {
+            Ok(operation_type_to_py(
+                py,
+                &node.instruction.replace(
+                    py,
+                    Some(new_op.operation.into()),
+                    Some(node.instruction.qubits.clone().into_any().bind(py)),
+                    Some(node.instruction.clbits.clone().into_any().bind(py)),
+                    Some(new_op.params),
                     new_op.label,
                     new_op.duration,
                     new_op.unit,
                     new_condition.clone(),
-                    #[cfg(feature = "cache_pygates")]
-                    Some(op.unbind()),
-                ));
-                // using self.dag.contract_nodes to replace a single node. Is there a better method
-                // to do it?
-                let new_node = self
-                    .dag
-                    .contract_nodes(Some(old_id).into_iter(), new_weight.clone(), false)
-                    .unwrap();
-                let new_name = match &new_weight {
-                    NodeType::Operation(new_packed) => new_packed.op.name(),
-                    _ => unreachable!(),
-                };
-                self.decrement_op(old_packed.op.name().to_string());
-                self.increment_op(new_name.to_string());
-
-                if !inplace {
-                    Ok(self.get_node(py, new_node)?)
-                } else {
-                    let new_op = convert_py_to_operation_type(py, op.clone().unbind())?;
-                    Ok(operation_type_to_py(
-                        py,
-                        &node.instruction.replace(
-                            py,
-                            Some(new_op.operation.into()),
-                            Some(node.instruction.qubits.clone().into_any().bind(py)),
-                            Some(node.instruction.clbits.clone().into_any().bind(py)),
-                            Some(new_op.params),
-                            new_op.label,
-                            new_op.duration,
-                            new_op.unit,
-                            new_condition.clone(),
-                        )?,
-                    )?)
-                }
-            }
-            Some(_) => Err(DAGCircuitError::new_err(
-                "'node' must be of type 'DAGOpNode'.",
-            )),
-            None => Err(DAGCircuitError::new_err("'node' not found in DAG.")),
+                )?,
+            )?)
         }
     }
 
