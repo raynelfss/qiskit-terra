@@ -23,7 +23,7 @@ use rustworkx_core::petgraph::{
 };
 
 pub struct BasisSearchVisitor<'a> {
-    graph: &'a StableDiGraph<NodeData, EdgeData>,
+    graph: &'a StableDiGraph<NodeData, Option<EdgeData>>,
     target_basis: HashSet<Key>,
     source_gates_remain: HashSet<Key>,
     num_gates_remain_for_rule: HashMap<usize, usize>,
@@ -34,13 +34,13 @@ pub struct BasisSearchVisitor<'a> {
 
 impl<'a> BasisSearchVisitor<'a> {
     pub fn new(
-        graph: &'a StableGraph<NodeData, EdgeData>,
+        graph: &'a StableGraph<NodeData, Option<EdgeData>>,
         source_basis: HashSet<Key>,
         target_basis: HashSet<Key>,
     ) -> Self {
         let mut save_index = usize::MAX;
         let mut num_gates_remain_for_rule = HashMap::default();
-        for edge_data in graph.edge_weights() {
+        for edge_data in graph.edge_weights().flatten() {
             if save_index == edge_data.index {
                 continue;
             }
@@ -82,10 +82,13 @@ impl<'a> BasisSearchVisitor<'a> {
         Control::Continue
     }
 
-    pub fn examine_edge(&mut self, edge: EdgeReference<'a, EdgeData>) -> Control<()> {
+    pub fn examine_edge(&mut self, edge: EdgeReference<'a, Option<EdgeData>>) -> Control<()> {
         let (target, edata) = (edge.target(), edge.weight());
 
-        // TODO: How should I handle a null edge_weight?
+        if edata.is_none() {
+            return Control::Continue;
+        }
+        let edata = edata.as_ref().unwrap();
         self.num_gates_remain_for_rule
             .entry(edata.index)
             .and_modify(|val| *val -= 1)
@@ -110,8 +113,12 @@ impl<'a> BasisSearchVisitor<'a> {
     /// the costs of all gates in the rule equivalence circuit. In the
     /// end, we need to subtract the cost of the source since `dijkstra`
     /// will later add it.
-    pub fn edge_cost(&self, edge_data: &'a EdgeData) -> u32 {
+    pub fn edge_cost(&self, edge_data: &'a Option<EdgeData>) -> u32 {
         // TODO: Handle None case
+        if edge_data.is_none() {
+            return 1;
+        }
+        let edge_data = edge_data.as_ref().unwrap();
         let mut cost_tot = 0;
         for instruction in edge_data.rule.circuit.data.iter() {
             let key = Key {
