@@ -27,7 +27,7 @@ pub struct BasisSearchVisitor<'a> {
     target_basis: HashSet<Key>,
     source_gates_remain: HashSet<Key>,
     num_gates_remain_for_rule: HashMap<usize, usize>,
-    basis_transforms: Vec<(&'a str, u32, &'a [Param], &'a CircuitRep)>,
+    pub basis_transforms: Vec<(&'a str, u32, &'a [Param], &'a CircuitRep)>,
     predecessors: HashMap<&'a Key, &'a Equivalence>,
     opt_cost_map: HashMap<&'a Key, u32>,
 }
