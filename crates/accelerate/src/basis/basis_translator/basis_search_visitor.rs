@@ -1,15 +1,25 @@
+// This code is part of Qiskit.
+//
+// (C) Copyright IBM 2024
+//
+// This code is licensed under the Apache License, Version 2.0. You may
+// obtain a copy of this license in the LICENSE.txt file in the root directory
+// of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+//
+// Any modifications or derivative works of this code must retain this
+// copyright notice, and modified files need to carry a notice indicating
+// that they have been altered from the originals.
+
 use ahash::{HashMap, HashSet};
 use pyo3::prelude::*;
 use qiskit_circuit::{
     equivalence::{CircuitRep, EdgeData, Equivalence, Key, NodeData},
-    operations::Param,
+    operations::{Operation, Param},
 };
-use rustworkx_core::{
-    petgraph::{
-        graph::{NodeIndex},
-        stable_graph::{EdgeReference, StableDiGraph, StableGraph},
-        visit::{Control, EdgeRef},
-    },
+use rustworkx_core::petgraph::{
+    graph::NodeIndex,
+    stable_graph::{EdgeReference, StableDiGraph, StableGraph},
+    visit::{Control, EdgeRef},
 };
 
 pub struct BasisSearchVisitor<'a> {
@@ -73,17 +83,6 @@ impl<'a> BasisSearchVisitor<'a> {
     }
 
     pub fn examine_edge(&mut self, edge: EdgeReference<'a, EdgeData>) -> Control<()> {
-        // _, target, edata = edge
-        // if edata is None:
-        //     return
-
-        // self._num_gates_remain_for_rule[edata.index] -= 1
-
-        // target = self.graph[target].key
-        // # if there are gates in this `rule` that we have not yet generated, we can't apply
-        // # this `rule`. if `target` is already in basis, it's not beneficial to use this rule.
-        // if self._num_gates_remain_for_rule[edata.index] > 0 or target in self.target_basis:
-        //     raise rustworkx.visit.PruneSearch
         let (target, edata) = (edge.target(), edge.weight());
 
         // TODO: How should I handle a null edge_weight?
@@ -100,10 +99,6 @@ impl<'a> BasisSearchVisitor<'a> {
     }
 
     pub fn edge_relaxed(&mut self, edge: EdgeReference<'a, EdgeData>) -> Control<()> {
-        // _, target, edata = edge
-        // if edata is not None:
-        // gate = self.graph[target].key
-        // self._predecessors[gate] = edata.rule
         let (target, edata) = (edge.target(), edge.weight());
         let gate = &self.graph[target].key;
         self.predecessors.insert(gate, &edata.rule);
@@ -115,25 +110,16 @@ impl<'a> BasisSearchVisitor<'a> {
     /// the costs of all gates in the rule equivalence circuit. In the
     /// end, we need to subtract the cost of the source since `dijkstra`
     /// will later add it.
-    pub fn edge_cost(&self, _edge_data: EdgeData) -> u32 {
-        // if edge_data is None:
-        //     # the target of the edge is a gate in the target basis,
-        //     # so we return a default value of 1.
-        //     return 1
-
-        // cost_tot = 0
-        // for instruction in edge_data.rule.circuit:
-        //     key = Key(name=instruction.operation.name, num_qubits=len(instruction.qubits))
-        //     cost_tot += self._opt_cost_map[key]
-
-        // return cost_tot - self._opt_cost_map[edge_data.source]
-        todo!()
+    pub fn edge_cost(&self, edge_data: &'a EdgeData) -> u32 {
         // TODO: Handle None case
-        // let mut cost_tot = 0;
-        // for instruction in edge_data.rule.circuit {
-        //     let key = Key(name=instruction.operation.name, num_qubit=instruction.num_qubits);
-        //     cost_tot += self.opt_cost_map[key]
-        // }
-        // return cost_tot - self.opt_cost_map[edge_data.source];
+        let mut cost_tot = 0;
+        for instruction in edge_data.rule.circuit.data.iter() {
+            let key = Key {
+                name: instruction.op.name().to_string(),
+                num_qubits: instruction.op.num_qubits(),
+            };
+            cost_tot += self.opt_cost_map[&key]
+        }
+        cost_tot - self.opt_cost_map[&edge_data.source]
     }
 }
