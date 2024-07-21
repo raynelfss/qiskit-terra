@@ -18,7 +18,7 @@ use qiskit_circuit::{
 };
 use rustworkx_core::petgraph::{
     graph::NodeIndex,
-    stable_graph::{EdgeReference, StableDiGraph, StableGraph},
+    stable_graph::{StableDiGraph, StableGraph},
     visit::{Control, EdgeRef},
 };
 
@@ -82,9 +82,7 @@ impl<'a> BasisSearchVisitor<'a> {
         Control::Continue
     }
 
-    pub fn examine_edge(&mut self, edge: EdgeReference<'a, Option<EdgeData>>) -> Control<()> {
-        let (target, edata) = (edge.target(), edge.weight());
-
+    pub fn examine_edge(&mut self, target: NodeIndex, edata: Option<&'a EdgeData>) -> Control<()> {
         if edata.is_none() {
             return Control::Continue;
         }
@@ -101,10 +99,11 @@ impl<'a> BasisSearchVisitor<'a> {
         Control::Continue
     }
 
-    pub fn edge_relaxed(&mut self, edge: EdgeReference<'a, EdgeData>) -> Control<()> {
-        let (target, edata) = (edge.target(), edge.weight());
-        let gate = &self.graph[target].key;
-        self.predecessors.insert(gate, &edata.rule);
+    pub fn edge_relaxed(&mut self, target: NodeIndex, edata: Option<&'a EdgeData>) -> Control<()> {
+        if let Some(edata) = edata {
+            let gate = &self.graph[target].key;
+            self.predecessors.insert(gate, &edata.rule);
+        }
         Control::Continue
     }
     /// Returns the cost of an edge.
@@ -113,8 +112,7 @@ impl<'a> BasisSearchVisitor<'a> {
     /// the costs of all gates in the rule equivalence circuit. In the
     /// end, we need to subtract the cost of the source since `dijkstra`
     /// will later add it.
-    pub fn edge_cost(&self, edge_data: &'a Option<EdgeData>) -> u32 {
-        // TODO: Handle None case
+    pub fn edge_cost(&self, edge_data: Option<&'a EdgeData>) -> u32 {
         if edge_data.is_none() {
             return 1;
         }
