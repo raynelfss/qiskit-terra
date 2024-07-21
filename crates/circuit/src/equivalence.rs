@@ -273,7 +273,7 @@ pub struct CircuitRep {
     object: PyObject,
     pub num_qubits: usize,
     pub num_clbits: usize,
-    data: CircuitData,
+    pub data: CircuitData,
 }
 
 impl CircuitRep {
