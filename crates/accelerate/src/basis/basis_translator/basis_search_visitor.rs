@@ -24,8 +24,8 @@ use rustworkx_core::petgraph::{
 
 pub struct BasisSearchVisitor<'a> {
     graph: &'a StableDiGraph<NodeData, EdgeData>,
-    target_basis: HashSet<&'a Key>,
-    source_gates_remain: HashSet<&'a Key>,
+    target_basis: HashSet<Key>,
+    source_gates_remain: HashSet<Key>,
     num_gates_remain_for_rule: HashMap<usize, usize>,
     basis_transforms: Vec<(&'a str, u32, &'a [Param], &'a CircuitRep)>,
     predecessors: HashMap<&'a Key, &'a Equivalence>,
@@ -35,8 +35,8 @@ pub struct BasisSearchVisitor<'a> {
 impl<'a> BasisSearchVisitor<'a> {
     pub fn new(
         graph: &'a StableGraph<NodeData, EdgeData>,
-        source_basis: HashSet<&'a Key>,
-        target_basis: HashSet<&'a Key>,
+        source_basis: HashSet<Key>,
+        target_basis: HashSet<Key>,
     ) -> Self {
         let mut save_index = usize::MAX;
         let mut num_gates_remain_for_rule = HashMap::default();
