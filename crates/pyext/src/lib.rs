@@ -13,7 +13,7 @@
 use pyo3::prelude::*;
 
 use qiskit_accelerate::{
-    circuit_library::circuit_library, commutation_analysis::commutation_analysis,
+    basis::basis, circuit_library::circuit_library, commutation_analysis::commutation_analysis,
     commutation_checker::commutation_checker, convert_2q_block_matrix::convert_2q_block_matrix,
     dense_layout::dense_layout, equivalence::equivalence, error_map::error_map,
     euler_one_qubit_decomposer::euler_one_qubit_decomposer, isometry::isometry, nlayout::nlayout,
@@ -41,6 +41,7 @@ fn _accelerate(m: &Bound<PyModule>) -> PyResult<()> {
     add_submodule(m, qiskit_qasm2::qasm2, "qasm2")?;
     add_submodule(m, qiskit_qasm3::qasm3, "qasm3")?;
     add_submodule(m, circuit_library, "circuit_library")?;
+    add_submodule(m, basis, "basis")?;
     add_submodule(m, convert_2q_block_matrix, "convert_2q_block_matrix")?;
     add_submodule(m, dense_layout, "dense_layout")?;
     add_submodule(m, equivalence, "equivalence")?;
