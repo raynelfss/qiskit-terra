@@ -52,7 +52,7 @@ pub(crate) fn py_basis_search(
     .into_py(py)
 }
 
-type BasisTransforms = Vec<(String, u32, SmallVec<[Param; 3]>, CircuitRep)>;
+pub(crate) type BasisTransforms = Vec<(String, u32, SmallVec<[Param; 3]>, CircuitRep)>;
 /// Search for a set of transformations from source_basis to target_basis.
 ///
 /// Performs a Dijkstra search algorithm on the `EquivalenceLibrary`'s core graph

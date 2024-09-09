@@ -33,7 +33,9 @@ from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.transpiler.basepasses import TransformationPass
 from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.circuit.controlflow import CONTROL_FLOW_OP_NAMES
-from qiskit._accelerate.basis.basis_translator import basis_search
+from qiskit.circuit.equivalence import EquivalenceLibrary
+
+from qiskit._accelerate.basis.basis_translator import CoreBasisTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -115,18 +117,12 @@ class BasisTranslator(TransformationPass):
         """
 
         super().__init__()
-        self._equiv_lib = equivalence_library
-        self._target_basis = target_basis
-        self._target = target
-        self._non_global_operations = None
-        self._qargs_with_non_global_operation = {}
-        self._min_qubits = min_qubits
-        if target is not None:
-            self._non_global_operations = self._target.get_non_global_operation_names()
-            self._qargs_with_non_global_operation = defaultdict(set)
-            for gate in self._non_global_operations:
-                for qarg in self._target[gate]:
-                    self._qargs_with_non_global_operation[qarg].add(gate)
+        self._core = CoreBasisTranslator(
+            equivalence_library,
+            set() if target_basis is None else set(target_basis),
+            min_qubits,
+            target,
+        )
 
     def run(self, dag):
         """Translate an input DAGCircuit to the target basis.
@@ -140,94 +136,17 @@ class BasisTranslator(TransformationPass):
         Returns:
             DAGCircuit: translated circuit.
         """
-        if self._target_basis is None and self._target is None:
-            return dag
 
+        # Pre-process in rust
+        result = self._core.pre_compose(dag)
+        if result is None:
+            return dag
+        basis_transforms = result["basis_transforms"]
+        source_basis = result["source_basis"]
+        qarg_local_basis_transforms = result["qarg_local_basis_transforms"]
+        qargs_local_source_basis = result["qargs_local_source_basis"]
+        target_basis = result["target_basis"]
         qarg_indices = {qubit: index for index, qubit in enumerate(dag.qubits)}
-
-        # Names of instructions assumed to supported by any backend.
-        if self._target is None:
-            basic_instrs = ["measure", "reset", "barrier", "snapshot", "delay", "store"]
-            target_basis = set(self._target_basis)
-            source_basis = set(self._extract_basis(dag))
-            qargs_local_source_basis = {}
-        else:
-            basic_instrs = ["barrier", "snapshot", "store"]
-            target_basis = self._target.keys() - set(self._non_global_operations)
-            source_basis, qargs_local_source_basis = self._extract_basis_target(dag, qarg_indices)
-
-        target_basis = set(target_basis).union(basic_instrs)
-        # If the source basis is a subset of the target basis and we have no circuit
-        # instructions on qargs that have non-global operations there is nothing to
-        # translate and we can exit early.
-        source_basis_names = {x[0] for x in source_basis}
-        if source_basis_names.issubset(target_basis) and not qargs_local_source_basis:
-            return dag
-
-        logger.info(
-            "Begin BasisTranslator from source basis %s to target basis %s.",
-            source_basis,
-            target_basis,
-        )
-
-        # Search for a path from source to target basis.
-        search_start_time = time.time()
-        basis_transforms = basis_search(self._equiv_lib, source_basis, target_basis)
-
-        qarg_local_basis_transforms = {}
-        for qarg, local_source_basis in qargs_local_source_basis.items():
-            expanded_target = set(target_basis)
-            # For any multiqubit operation that contains a subset of qubits that
-            # has a non-local operation, include that non-local operation in the
-            # search. This matches with the check we did above to include those
-            # subset non-local operations in the check here.
-            if len(qarg) > 1:
-                for non_local_qarg, local_basis in self._qargs_with_non_global_operation.items():
-                    if qarg.issuperset(non_local_qarg):
-                        expanded_target |= local_basis
-            else:
-                expanded_target |= self._qargs_with_non_global_operation[tuple(qarg)]
-
-            logger.info(
-                "Performing BasisTranslator search from source basis %s to target "
-                "basis %s on qarg %s.",
-                local_source_basis,
-                expanded_target,
-                qarg,
-            )
-            local_basis_transforms = basis_search(
-                self._equiv_lib, local_source_basis, expanded_target
-            )
-
-            if local_basis_transforms is None:
-                raise TranspilerError(
-                    "Unable to translate the operations in the circuit: "
-                    f"{[x[0] for x in local_source_basis]} to the backend's (or manually "
-                    f"specified) target basis: {list(expanded_target)}. This likely means the "
-                    "target basis is not universal or there are additional equivalence rules "
-                    "needed in the EquivalenceLibrary being used. For more details on this "
-                    "error see: "
-                    "https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes."
-                    "BasisTranslator#translation-errors"
-                )
-
-            qarg_local_basis_transforms[qarg] = local_basis_transforms
-
-        search_end_time = time.time()
-        logger.info(
-            "Basis translation path search completed in %.3fs.", search_end_time - search_start_time
-        )
-
-        if basis_transforms is None:
-            raise TranspilerError(
-                "Unable to translate the operations in the circuit: "
-                f"{[x[0] for x in source_basis]} to the backend's (or manually specified) target "
-                f"basis: {list(target_basis)}. This likely means the target basis is not universal "
-                "or there are additional equivalence rules needed in the EquivalenceLibrary being "
-                "used. For more details on this error see: "
-                "https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes."
-                "BasisTranslator#translation-errors"
-            )
 
         # Compose found path into a set of instruction substitution rules.
 
@@ -253,7 +172,7 @@ class BasisTranslator(TransformationPass):
             for node in dag.topological_op_nodes():
                 node_qargs = tuple(wire_map[bit] for bit in node.qargs)
                 qubit_set = frozenset(node_qargs)
-                if node.name in target_basis or len(node.qargs) < self._min_qubits:
+                if node.name in target_basis or len(node.qargs) < self._core.min_qubits:
                     if node.name in CONTROL_FLOW_OP_NAMES:
                         flow_blocks = []
                         for block in node.op.blocks:
@@ -274,8 +193,8 @@ class BasisTranslator(TransformationPass):
                     out_dag.apply_operation_back(node.op, node.qargs, node.cargs, check=False)
                     continue
                 if (
-                    node_qargs in self._qargs_with_non_global_operation
-                    and node.name in self._qargs_with_non_global_operation[node_qargs]
+                    node_qargs in self._core.qargs_with_non_global_operation
+                    and node.name in self._core.qargs_with_non_global_operation[node_qargs]
                 ):
                     out_dag.apply_operation_back(node.op, node.qargs, node.cargs, check=False)
                     continue
@@ -379,73 +298,6 @@ class BasisTranslator(TransformationPass):
                 dag._apply_op_node_back(new_node)
             if target_dag.global_phase:
                 dag.global_phase += target_dag.global_phase
-
-    @singledispatchmethod
-    def _extract_basis(self, circuit):
-        return circuit
-
-    @_extract_basis.register
-    def _(self, dag: DAGCircuit):
-        for node in dag.op_nodes():
-            if not dag.has_calibration_for(node) and len(node.qargs) >= self._min_qubits:
-                yield (node.name, node.num_qubits)
-            if node.name in CONTROL_FLOW_OP_NAMES:
-                for block in node.op.blocks:
-                    yield from self._extract_basis(block)
-
-    @_extract_basis.register
-    def _(self, circ: QuantumCircuit):
-        for instruction in circ.data:
-            operation = instruction.operation
-            if (
-                not circ.has_calibration_for(instruction)
-                and len(instruction.qubits) >= self._min_qubits
-            ):
-                yield (operation.name, operation.num_qubits)
-            if isinstance(operation, ControlFlowOp):
-                for block in operation.blocks:
-                    yield from self._extract_basis(block)
-
-    def _extract_basis_target(
-        self, dag, qarg_indices, source_basis=None, qargs_local_source_basis=None
-    ):
-        if source_basis is None:
-            source_basis = set()
-        if qargs_local_source_basis is None:
-            qargs_local_source_basis = defaultdict(set)
-        for node in dag.op_nodes():
-            qargs = tuple(qarg_indices[bit] for bit in node.qargs)
-            if dag.has_calibration_for(node) or len(node.qargs) < self._min_qubits:
-                continue
-            # Treat the instruction as on an incomplete basis if the qargs are in the
-            # qargs_with_non_global_operation dictionary or if any of the qubits in qargs
-            # are a superset for a non-local operation. For example, if the qargs
-            # are (0, 1) and that's a global (ie no non-local operations on (0, 1)
-            # operation but there is a non-local operation on (1,) we need to
-            # do an extra non-local search for this op to ensure we include any
-            # single qubit operation for (1,) as valid. This pattern also holds
-            # true for > 2q ops too (so for 4q operations we need to check for 3q, 2q,
-            # and 1q operations in the same manner)
-            if qargs in self._qargs_with_non_global_operation or any(
-                frozenset(qargs).issuperset(incomplete_qargs)
-                for incomplete_qargs in self._qargs_with_non_global_operation
-            ):
-                qargs_local_source_basis[frozenset(qargs)].add((node.name, node.num_qubits))
-            else:
-                source_basis.add((node.name, node.num_qubits))
-            if node.name in CONTROL_FLOW_OP_NAMES:
-                for block in node.op.blocks:
-                    block_dag = circuit_to_dag(block)
-                    source_basis, qargs_local_source_basis = self._extract_basis_target(
-                        block_dag,
-                        {
-                            inner: qarg_indices[outer]
-                            for inner, outer in zip(block.qubits, node.qargs)
-                        },
-                        source_basis=source_basis,
-                        qargs_local_source_basis=qargs_local_source_basis,
-                    )
-        return source_basis, qargs_local_source_basis
 
 
 def _compose_transforms(basis_transforms, source_basis, source_dag):

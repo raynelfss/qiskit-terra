@@ -43,14 +43,14 @@ use instruction_properties::InstructionProperties;
 
 use self::exceptions::TranspilerError;
 
-mod exceptions {
+pub mod exceptions {
     use pyo3::import_exception_bound;
     import_exception_bound! {qiskit.exceptions, QiskitError}
     import_exception_bound! {qiskit.transpiler.exceptions, TranspilerError}
 }
 
 // Custom types
-type Qargs = SmallVec<[PhysicalQubit; 2]>;
+pub type Qargs = SmallVec<[PhysicalQubit; 2]>;
 type GateMap = IndexMap<String, PropsMap, RandomState>;
 type PropsMap = NullableIndexMap<Qargs, Option<InstructionProperties>>;
 type GateMapState = Vec<(String, Vec<(Option<Qargs>, Option<InstructionProperties>)>)>;
