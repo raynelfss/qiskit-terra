@@ -11,18 +11,24 @@
 // that they have been altered from the originals.
 
 use basis_search::basis_search;
+use compose_transforms::compose_transforms;
 use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
 use pyo3::intern;
 use pyo3::prelude::*;
 
 pub mod basis_search;
+pub mod compose_transforms;
 
 use pyo3::types::IntoPyDict;
 use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
+use qiskit_circuit::circuit_instruction::OperationFromPython;
 use qiskit_circuit::imports::CIRCUIT_TO_DAG;
+use qiskit_circuit::imports::DAG_TO_CIRCUIT;
 use qiskit_circuit::operations::Param;
+use qiskit_circuit::packed_instruction::PackedInstruction;
+use qiskit_circuit::packed_instruction::PackedOperation;
 use qiskit_circuit::{
     circuit_data::CircuitData,
     dag_circuit::{DAGCircuit, NodeType},
@@ -51,6 +57,8 @@ pub struct BasisTranslator {
     #[pyo3(get)]
     min_qubits: usize,
 }
+
+type ExtraInstructionMap<'a> = HashMap<&'a Option<Qargs>, HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)>>;
 
 #[pymethods]
 impl BasisTranslator {
@@ -95,11 +103,10 @@ impl BasisTranslator {
         }
     }
 
-    fn pre_compose<'py>(&mut self, py: Python<'py>, dag: &'py DAGCircuit) -> PyResult<PyObject> {
+    fn pre_compose<'py>(&mut self, py: Python<'py>, dag: PyRefMut<'py, DAGCircuit>) -> PyResult<PyRefMut<'py,DAGCircuit>> {
         if self.target_basis.is_empty() && self.target.is_none() {
-            return Ok(py.None());
+            return Ok(dag);
         }
-        let _qargs = dag.qubits(py).into_bound(py);
         let basic_instrs: HashSet<String>;
 
         let source_basis: HashSet<(String, u32)>;
@@ -122,13 +129,13 @@ impl BasisTranslator {
                 .map(|x| x.to_string())
                 .collect();
             (source_basis, qargs_local_source_basis) =
-                self.extract_basis_target(py, dag, None, None)?;
+                self.extract_basis_target(py, &dag, None, None)?;
         } else {
             basic_instrs = ["measure", "reset", "barrier", "snapshot", "delay", "store"]
                 .into_iter()
                 .map(|x| x.to_string())
                 .collect();
-            source_basis = self.extract_basis(py, dag)?;
+            source_basis = self.extract_basis(py, &dag)?;
             qargs_local_source_basis = HashMap::default();
             target_basis = self.target_basis.clone();
         }
@@ -142,7 +149,7 @@ impl BasisTranslator {
         let source_basis_names: HashSet<String> =
             source_basis.iter().map(|x| x.0.clone()).collect();
         if source_basis_names.is_subset(&target_basis) && qargs_local_source_basis.is_empty() {
-            return Ok(py.None());
+            return Ok(dag);
         }
         let basis_transforms = basis_search(
             &mut self.equiv_lib,
@@ -217,38 +224,10 @@ impl BasisTranslator {
             , source_basis.iter().map(|x| x.0.as_str()).collect_vec(), &target_basis)));
         };
 
-        let ret = PyDict::new_bound(py);
-        ret.set_item("basis_transforms", basis_transforms)?;
-        ret.set_item("source_basis", source_basis)?;
-        ret.set_item(
-            "qarg_local_basis_transforms",
-            qarg_local_basis_transforms
-                .into_iter()
-                .map(|(k, v)| {
-                    if let Some(k) = k {
-                        (Some(PyTuple::new_bound(py, k)), v)
-                    } else {
-                        (None, v)
-                    }
-                })
-                .into_py_dict_bound(py),
-        )?;
-        ret.set_item(
-            "qargs_local_source_basis",
-            qargs_local_source_basis
-                .into_iter()
-                .map(|(k, v)| {
-                    if let Some(k) = k {
-                        (Some(PyTuple::new_bound(py, k)), v)
-                    } else {
-                        (None, v)
-                    }
-                })
-                .into_py_dict_bound(py),
-        )?;
-        ret.set_item("target_basis", target_basis)?;
+        let instr_map: HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)> = compose_transforms(py, &basis_transforms, &source_basis, &dag)?;
+        let extra_inst_map: ExtraInstructionMap = qarg_local_basis_transforms.iter().map(|(qarg, transform)| -> PyResult<_> {Ok((qarg, compose_transforms(py, transform, &qargs_local_source_basis[qarg], &dag)?))}).collect::<PyResult<_>>()?;
 
-        Ok(ret.to_object(py))
+        Ok(dag)
     }
 }
 
@@ -407,7 +386,91 @@ impl BasisTranslator {
         }
         Ok((source_basis, qargs_local_source_basis))
     }
+    fn apply_translation(&self, py: Python, dag: &DAGCircuit, target_basis: &HashSet<String>, extra_inst_map: &ExtraInstructionMap) -> PyResult<(DAGCircuit, bool)> {
+        let is_updated = false;
+        let mut out_dag = dag.copy_empty_like(py, "alike")?;
+        for node in dag.topological_op_nodes()? {
+            let Some(NodeType::Operation(node_obj)) = dag.dag.node_weight(node).cloned() else {
+                unreachable!("Node {:?} was in the output of topological_op_nodes, but doesn't seem to be an op_node", node)
+ };
+            let node_qarg = dag.get_qargs(node_obj.qubits);
+            let qubit_set = HashSet::from_iter(node_qarg);
+            if target_basis.contains(node_obj.op.name()) || node_qarg.len() < self.min_qubits {
+                if node_obj.op.control_flow() {
+                    let OperationRef::Instruction(control_op) = node_obj.op.view() else {
+                        unreachable!("This instruction says it is of control flow type, but is not an Instruction instance")
+                    };
+                    let flow_blocks = vec![];
+                    let bound_obj = control_op.instruction.bind(py);
+                    let blocks = bound_obj.getattr("blocks")?;
+                    for block in blocks.iter()? {
+                        let dag_block = CIRCUIT_TO_DAG.get_bound(py).call1((block?,))?.downcast_into::<DAGCircuit>()?.borrow();
+                        let (updated_dag, is_updated) = self.apply_translation(py, &dag_block, target_basis)?;
+                        let flow_circ_block = 
+                        if is_updated {
+                            DAG_TO_CIRCUIT.get_bound(py).call1((updated_dag,))?
+                        } else {
+                            block?
+                        };
+                        flow_blocks.push(flow_circ_block);
+                    }
+                    let replaced_blocks = bound_obj.call_method1("replace_blocks", (flow_blocks,))?;
+                    let new_op: OperationFromPython = replaced_blocks.extract()?;
+                    node_obj.op = new_op.operation;
+                    node_obj.params = Some(Box::new(new_op.params));
+                    node_obj.extra_attrs = new_op.extra_attrs;
+                }
+                out_dag.push_back(py, node_obj.clone())?;
+                continue;
+            }
+            let node_qarg_as_physical = node_qarg.iter().map(|x| PhysicalQubit(x.0)).collect();
+            if self.qargs_with_non_global_operation.contains_key(&Some(node_qarg_as_physical)) && self.qargs_with_non_global_operation[&Some(node_qarg_as_physical)].contains(node_obj.op.name()) {
+                out_dag.push_back(py, node_obj)?;
+                continue;
+            }
+
+            if dag.has_calibration_for_index(py, node)? {
+                out_dag.push_back(py, node_obj)?;
+                continue;
+            }
+            let unique_qargs: Qargs = qubit_set.iter().map(|x| PhysicalQubit(x.0)).collect();
+            if extra_inst_map.contains_key(&Some(unique_qargs)) {
+                todo!()
+            }
+        }
+    
+        is_updated
+    }
+
+    fn replace_node(&mut self, dag: &mut DAGCircuit, node: PackedInstruction, instr_map: &HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)>) -> PyResult<()> {
+        let (target_params, target_dag) = &instr_map[&(node.op.name().to_string(), node.op.num_qubits())];
+        if node.params_view().len() != target_params.len() {
+            return Err(TranspilerError::new_err(format!(
+                "Translation num_params not equal to op num_params. \
+                Op: {:?} {} Translation: {:?}\n{:?}",
+                node.params_view(),
+                node.op.name(),
+                &target_params,
+                &target_dag
+            )));
+        }
+        if !node.params_view().is_empty() {
+            let parameter_map = target_params.iter().zip(node.params_view());
+            for inner_index in target_dag.topological_op_nodes()? {
+                let NodeType::Operation(inner_node) = &target_dag.dag[inner_index] else {
+                    unreachable!("Node returned by topological_op_nodes was not an Operation node.")
+                };
+                let new_qubits = dag.push_back(py, instr)
+
+            }
+        }
+
+        Ok(())
+    }
+
 }
+
+
 
 #[pymodule]
 pub fn basis_translator(m: &Bound<PyModule>) -> PyResult<()> {
