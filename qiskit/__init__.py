@@ -43,14 +43,6 @@ else:
             " Qiskit unfortunately cannot enforce this requirement during environment resolution."
             " See https://qisk.it/packaging-1-0 for more detail."
         )
-if sys.version_info < (3, 9):
-    warnings.warn(
-        "Using Qiskit with Python 3.8 is deprecated as of the 1.1.0 release. "
-        "Support for running Qiskit with Python 3.8 will be removed in the "
-        "1.3.0 release, which coincides with when Python 3.8 goes end of life.",
-        DeprecationWarning,
-    )
-
 
 from . import _accelerate
 import qiskit._numpy_compat
@@ -63,6 +55,7 @@ sys.modules["qiskit._accelerate.circuit"] = _accelerate.circuit
 sys.modules["qiskit._accelerate.circuit_library"] = _accelerate.circuit_library
 sys.modules["qiskit._accelerate.basis"] = _accelerate.basis
 sys.modules["qiskit._accelerate.basis.basis_translator"] = _accelerate.basis.basis_translator
+sys.modules["qiskit._accelerate.converters"] = _accelerate.converters
 sys.modules["qiskit._accelerate.convert_2q_block_matrix"] = _accelerate.convert_2q_block_matrix
 sys.modules["qiskit._accelerate.dense_layout"] = _accelerate.dense_layout
 sys.modules["qiskit._accelerate.equivalence"] = _accelerate.equivalence
@@ -77,6 +70,9 @@ sys.modules["qiskit._accelerate.optimize_1q_gates"] = _accelerate.optimize_1q_ga
 sys.modules["qiskit._accelerate.pauli_expval"] = _accelerate.pauli_expval
 sys.modules["qiskit._accelerate.qasm2"] = _accelerate.qasm2
 sys.modules["qiskit._accelerate.qasm3"] = _accelerate.qasm3
+sys.modules["qiskit._accelerate.remove_diagonal_gates_before_measure"] = (
+    _accelerate.remove_diagonal_gates_before_measure
+)
 sys.modules["qiskit._accelerate.results"] = _accelerate.results
 sys.modules["qiskit._accelerate.sabre"] = _accelerate.sabre
 sys.modules["qiskit._accelerate.sampled_exp_val"] = _accelerate.sampled_exp_val
@@ -91,7 +87,13 @@ sys.modules["qiskit._accelerate.synthesis.linear"] = _accelerate.synthesis.linea
 sys.modules["qiskit._accelerate.synthesis.clifford"] = _accelerate.synthesis.clifford
 sys.modules["qiskit._accelerate.commutation_checker"] = _accelerate.commutation_checker
 sys.modules["qiskit._accelerate.commutation_analysis"] = _accelerate.commutation_analysis
+sys.modules["qiskit._accelerate.commutation_cancellation"] = _accelerate.commutation_cancellation
 sys.modules["qiskit._accelerate.synthesis.linear_phase"] = _accelerate.synthesis.linear_phase
+sys.modules["qiskit._accelerate.split_2q_unitaries"] = _accelerate.split_2q_unitaries
+sys.modules["qiskit._accelerate.gate_direction"] = _accelerate.gate_direction
+sys.modules["qiskit._accelerate.inverse_cancellation"] = _accelerate.inverse_cancellation
+sys.modules["qiskit._accelerate.check_map"] = _accelerate.check_map
+sys.modules["qiskit._accelerate.filter_op_nodes"] = _accelerate.filter_op_nodes
 
 from qiskit.exceptions import QiskitError, MissingOptionalLibraryError
 
