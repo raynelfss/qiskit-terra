@@ -242,7 +242,7 @@ impl BasisTranslator {
             min_qubits: usize,
         ) -> PyResult<()> {
             for node in circuit.op_nodes(true) {
-                let Some(NodeType::Operation(operation)) = circuit.dag.node_weight(node) else {
+                let Some(NodeType::Operation(operation)) = circuit.dag().node_weight(node) else {
                     continue;
                 };
                 if !circuit.has_calibration_for_index(py, node)?
@@ -313,7 +313,7 @@ impl BasisTranslator {
             qargs_local_source_basis.cloned().unwrap_or_default();
 
         for node in dag.op_nodes(true) {
-            let node_obj = match dag.dag.node_weight(node).unwrap() {
+            let node_obj = match dag.dag().node_weight(node).unwrap() {
                 NodeType::Operation(op) => op,
                 _ => unreachable!("This was supposed to be an op_node."),
             };
@@ -390,7 +390,7 @@ impl BasisTranslator {
         let is_updated = false;
         let mut out_dag = dag.copy_empty_like(py, "alike")?;
         for node in dag.topological_op_nodes()? {
-            let Some(NodeType::Operation(node_obj)) = dag.dag.node_weight(node).cloned() else {
+            let Some(NodeType::Operation(node_obj)) = dag.dag().node_weight(node).cloned() else {
                 unreachable!("Node {:?} was in the output of topological_op_nodes, but doesn't seem to be an op_node", node)
  };
             let node_qarg = dag.get_qargs(node_obj.qubits);
@@ -405,7 +405,7 @@ impl BasisTranslator {
                     let blocks = bound_obj.getattr("blocks")?;
                     for block in blocks.iter()? {
                         let dag_block = CIRCUIT_TO_DAG.get_bound(py).call1((block?,))?.downcast_into::<DAGCircuit>()?.borrow();
-                        let (updated_dag, is_updated) = self.apply_translation(py, &dag_block, target_basis)?;
+                        let (updated_dag, is_updated) = self.apply_translation(py, &dag_block, target_basis, &extra_inst_map)?;
                         let flow_circ_block = 
                         if is_updated {
                             DAG_TO_CIRCUIT.get_bound(py).call1((updated_dag,))?
@@ -457,10 +457,10 @@ impl BasisTranslator {
         if !node.params_view().is_empty() {
             let parameter_map = target_params.iter().zip(node.params_view());
             for inner_index in target_dag.topological_op_nodes()? {
-                let NodeType::Operation(inner_node) = &target_dag.dag[inner_index] else {
+                let NodeType::Operation(inner_node) = &target_dag.dag()[inner_index] else {
                     unreachable!("Node returned by topological_op_nodes was not an Operation node.")
                 };
-                let new_qubits = dag.push_back(py, instr)
+                let new_qubits = dag.push_back(py, instr)?;
 
             }
         }
