@@ -100,8 +100,8 @@ pub(crate) fn basis_search(
     // their names and we need to have in addition the number of qubits they act on.
     let target_basis_keys: Vec<Key> = equiv_lib
         .keys()
+        .filter(|&key| target_basis.contains(key.name.as_str()))
         .cloned()
-        .filter(|key| target_basis.contains(key.name.as_str()))
         .collect();
 
     // Dummy node is inserted in the graph. Which is where the search will start

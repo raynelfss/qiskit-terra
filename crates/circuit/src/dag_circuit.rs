@@ -13,6 +13,7 @@
 use std::hash::{Hash, Hasher};
 
 use ahash::RandomState;
+use smallvec::SmallVec;
 
 use crate::bit_data::BitData;
 use crate::circuit_data::CircuitData;
@@ -26,7 +27,7 @@ use crate::error::DAGCircuitError;
 use crate::imports;
 use crate::interner::{Interned, Interner};
 use crate::operations::{Operation, OperationRef, Param, PyInstruction, StandardGate};
-use crate::packed_instruction::PackedInstruction;
+use crate::packed_instruction::{PackedInstruction, PackedOperation};
 use crate::rustworkx_core_vnext::isomorphism;
 use crate::{BitType, Clbit, Qubit, TupleLikeArg};
 
@@ -1670,7 +1671,7 @@ def _format(operand):
     /// Raises:
     ///     DAGCircuitError: if a leaf node is connected to multiple outputs
     #[pyo3(name = "apply_operation_back", signature = (op, qargs=None, cargs=None, *, check=true))]
-    pub fn py_apply_operation_back(
+    fn py_apply_operation_back(
         &mut self,
         py: Python,
         op: Bound<PyAny>,
@@ -5261,6 +5262,116 @@ impl DAGCircuit {
         }
 
         Ok(new_node)
+    }
+
+    /// Apply a [PackedOperation] to the back of the circuit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_operation_back(
+        &mut self,
+        py: Python,
+        op: PackedOperation,
+        qargs: &[Qubit],
+        cargs: &[Clbit],
+        params: Option<SmallVec<[Param; 3]>>,
+        extra_attrs: Option<Box<ExtraInstructionAttributes>>,
+        #[cfg(feature = "cache_pygates")] py_op: Option<PyObject>,
+    ) -> PyResult<NodeIndex> {
+        self.inner_apply_op(
+            py,
+            op,
+            qargs,
+            cargs,
+            params,
+            extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            py_op,
+            false,
+        )
+    }
+
+    /// Apply a [PackedOperation] to the front of the circuit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_operation_front(
+        &mut self,
+        py: Python,
+        op: PackedOperation,
+        qargs: &[Qubit],
+        cargs: &[Clbit],
+        params: Option<SmallVec<[Param; 3]>>,
+        extra_attrs: Option<Box<ExtraInstructionAttributes>>,
+        #[cfg(feature = "cache_pygates")] py_op: Option<PyObject>,
+    ) -> PyResult<NodeIndex> {
+        self.inner_apply_op(
+            py,
+            op,
+            qargs,
+            cargs,
+            params,
+            extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            py_op,
+            true,
+        )
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn inner_apply_op(
+        &mut self,
+        py: Python,
+        op: PackedOperation,
+        qargs: &[Qubit],
+        cargs: &[Clbit],
+        params: Option<SmallVec<[Param; 3]>>,
+        extra_attrs: Option<Box<ExtraInstructionAttributes>>,
+        #[cfg(feature = "cache_pygates")] py_op: Option<PyObject>,
+        front: bool,
+    ) -> PyResult<NodeIndex> {
+        // Check that all qargs are within an acceptable range
+        qargs.iter().try_for_each(|qarg| {
+            if qarg.0 as usize >= self.num_qubits() {
+                return Err(PyValueError::new_err(format!(
+                    "Qubit index {} is out of range. This DAGCircuit currently has only {} qubits.",
+                    qarg.0,
+                    self.num_qubits()
+                )));
+            }
+            Ok(())
+        })?;
+
+        // Check that all cargs are within an acceptable range
+        cargs.iter().try_for_each(|carg| {
+            if carg.0 as usize >= self.num_clbits() {
+                return Err(PyValueError::new_err(format!(
+                    "Clbit index {} is out of range. This DAGCircuit currently has only {} clbits.",
+                    carg.0,
+                    self.num_clbits()
+                )));
+            }
+            Ok(())
+        })?;
+
+        #[cfg(feature = "cache_pygates")]
+        let py_op = if let Some(py_op) = py_op {
+            py_op.into()
+        } else {
+            OnceCell::new()
+        };
+        let packed_instruction = PackedInstruction {
+            op,
+            qubits: self.qargs_interner.insert(qargs),
+            clbits: self.cargs_interner.insert(cargs),
+            params: params.map(|params: SmallVec<[Param; 3]>| Box::new(params)),
+            extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            py_op,
+        };
+
+        if front {
+            self.push_front(py, packed_instruction)
+        } else {
+            self.push_back(py, packed_instruction)
+        }
     }
 
     fn sort_key(&self, node: NodeIndex) -> SortKeyType {

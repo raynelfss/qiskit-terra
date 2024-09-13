@@ -13,11 +13,12 @@
 use hashbrown::{HashMap, HashSet};
 
 use pyo3::prelude::*;
-use qiskit_circuit::imports::{
-    CIRCUIT_TO_DAG, PARAMETER_VECTOR, QUANTUM_REGISTER,
-};
+use qiskit_circuit::circuit_instruction::OperationFromPython;
+use qiskit_circuit::converters::circuit_to_dag;
+use qiskit_circuit::imports::{PARAMETER_VECTOR, QUANTUM_REGISTER};
 use qiskit_circuit::operations::OperationRef;
 use qiskit_circuit::packed_instruction::PackedInstruction;
+use qiskit_circuit::Qubit;
 use qiskit_circuit::{
     dag_circuit::{DAGCircuit, NodeType},
     imports::GATE,
@@ -37,11 +38,8 @@ pub(super) fn py_compose_transforms(
     source_basis: HashSet<(String, u32)>,
     source_dag: &DAGCircuit,
 ) -> PyResult<HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)>> {
-    compose_transforms(py, &basis_transforms, &source_basis, source_dag).map(|ret| {
-        ret.into_iter()
-            .map(|((name, num_qubits), (param, equiv))| ((name, num_qubits), (param, equiv)))
-            .collect()
-    })
+    compose_transforms(py, &basis_transforms, &source_basis, source_dag)
+        .map(|ret| ret.into_iter().collect())
 }
 
 pub(super) fn compose_transforms<'a>(
@@ -82,8 +80,18 @@ pub(super) fn compose_transforms<'a>(
                 .map(|x| x.clone_ref(py))
                 .collect::<SmallVec<[Param; 3]>>(),
         ))?;
-
-        dag.py_apply_operation_back(py, gate, Some(qubits.extract()?), None, false)?;
+        let gate_obj: OperationFromPython = gate.extract()?;
+        let qubits: Vec<Qubit> = (0..dag.num_qubits() as u32).map(Qubit).collect();
+        dag.apply_operation_back(
+            py,
+            gate_obj.operation,
+            &qubits,
+            &[],
+            Some(gate_obj.params),
+            gate_obj.extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            Some(gate.into()),
+        )?;
         mapped_instructions.insert(
             (gate_name.clone(), gate_num_qubits),
             (placeholder_params, dag),
@@ -94,7 +102,7 @@ pub(super) fn compose_transforms<'a>(
                 let doomed_nodes = dag
                     .op_nodes(true)
                     .filter_map(|node| {
-                        if let Some(NodeType::Operation(op)) = dag.dag.node_weight(node) {
+                        if let Some(NodeType::Operation(op)) = dag.dag().node_weight(node) {
                             if (gate_name.as_str(), *gate_num_qubits)
                                 == (op.op.name(), op.op.num_qubits())
                             {
@@ -126,11 +134,8 @@ pub(super) fn compose_transforms<'a>(
                     replacement
                         .0
                         .assign_parameters_from_mapping(py, param_mapping)?;
-                    let replace_dag: PyRef<DAGCircuit> = CIRCUIT_TO_DAG
-                        .get_bound(py)
-                        .call1((replacement,))?
-                        .downcast_into::<DAGCircuit>()?
-                        .borrow();
+                    let replace_dag: DAGCircuit =
+                        DAGCircuit::from_circuit_data(py, replacement.0, true)?;
                     let op_node = dag.get_node(py, node)?;
                     dag.substitute_node_with_dag(py, op_node.bind(py), &replace_dag, None, true)?;
                 }
@@ -147,15 +152,16 @@ fn get_example_gates(
 ) -> PyResult<Box<HashMap<(String, u32), PackedInstruction>>> {
     let mut example_gates = example_gates.unwrap_or_default();
     for node in dag.op_nodes(true) {
-        if let Some(NodeType::Operation(op)) = dag.dag.node_weight(node) {
+        if let Some(NodeType::Operation(op)) = dag.dag().node_weight(node) {
             example_gates.insert((op.op.name().to_string(), op.op.num_qubits()), op.clone());
             if op.op.control_flow() {
-                let OperationRef::Instruction(inst) = op.op.view() else {panic!("Control flow op can only be an instruction")};
+                let OperationRef::Instruction(inst) = op.op.view() else {
+                    panic!("Control flow op can only be an instruction")
+                };
                 let inst_bound = inst.instruction.bind(py);
                 let blocks = inst_bound.getattr("blocks")?;
                 for block in blocks.iter()? {
-                    let block_as_dag = CIRCUIT_TO_DAG.get_bound(py).call1((block?,))?;
-                    let block_as_dag = block_as_dag.downcast_into::<DAGCircuit>()?.borrow();
+                    let block_as_dag = circuit_to_dag(py, block?.extract()?, true, None, None)?;
                     example_gates = get_example_gates(py, &block_as_dag, Some(example_gates))?;
                 }
             }
