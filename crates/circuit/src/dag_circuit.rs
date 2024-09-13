@@ -5202,7 +5202,7 @@ impl DAGCircuit {
         qargs: &[Qubit],
         cargs: &[Clbit],
         params: Option<SmallVec<[Param; 3]>>,
-        extra_attrs: Option<Box<ExtraInstructionAttributes>>,
+        extra_attrs: ExtraInstructionAttributes,
         #[cfg(feature = "cache_pygates")] py_op: Option<PyObject>,
     ) -> PyResult<NodeIndex> {
         self.inner_apply_op(
@@ -5227,7 +5227,7 @@ impl DAGCircuit {
         qargs: &[Qubit],
         cargs: &[Clbit],
         params: Option<SmallVec<[Param; 3]>>,
-        extra_attrs: Option<Box<ExtraInstructionAttributes>>,
+        extra_attrs: ExtraInstructionAttributes,
         #[cfg(feature = "cache_pygates")] py_op: Option<PyObject>,
     ) -> PyResult<NodeIndex> {
         self.inner_apply_op(
@@ -5252,7 +5252,7 @@ impl DAGCircuit {
         qargs: &[Qubit],
         cargs: &[Clbit],
         params: Option<SmallVec<[Param; 3]>>,
-        extra_attrs: Option<Box<ExtraInstructionAttributes>>,
+        extra_attrs: ExtraInstructionAttributes,
         #[cfg(feature = "cache_pygates")] py_op: Option<PyObject>,
         front: bool,
     ) -> PyResult<NodeIndex> {
