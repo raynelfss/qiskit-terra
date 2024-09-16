@@ -27,7 +27,6 @@ use pyo3::types::IntoPyDict;
 use pyo3::types::PyComplex;
 use pyo3::types::PyDict;
 use qiskit_circuit::circuit_instruction::OperationFromPython;
-use qiskit_circuit::converters::circuit_to_dag;
 use qiskit_circuit::imports::DAG_TO_CIRCUIT;
 use qiskit_circuit::imports::PARAMETER_EXPRESSION;
 use qiskit_circuit::operations::Param;
@@ -113,8 +112,8 @@ impl BasisTranslator {
         if self.target_basis.is_empty() && self.target.is_none() {
             return Ok(dag);
         }
-        let basic_instrs: HashSet<String>;
 
+        let basic_instrs: HashSet<String>;
         let source_basis: HashSet<(String, u32)>;
         let mut target_basis: HashSet<String>;
         let qargs_local_source_basis: HashMap<Option<Qargs>, HashSet<(String, u32)>>;
@@ -172,9 +171,10 @@ impl BasisTranslator {
             // search. This matches with the check we did above to include those
             // subset non-local operations in the check here.
             let mut expanded_target = target_basis.clone();
-            if let Some(qarg) = qarg {
-                let qarg_as_set: HashSet<PhysicalQubit> = HashSet::from_iter(qarg.iter().copied());
-                if qarg.len() > 1 {
+            if let Some(qarg_existent) = qarg {
+                let qarg_as_set: HashSet<PhysicalQubit> =
+                    HashSet::from_iter(qarg_existent.iter().copied());
+                if qarg_existent.len() > 1 {
                     for (non_local_qarg, local_basis) in self.qargs_with_non_global_operation.iter()
                     {
                         if let Some(non_local_qarg) = non_local_qarg {
@@ -186,12 +186,12 @@ impl BasisTranslator {
                             }
                         }
                     }
+                } else {
+                    expanded_target = expanded_target
+                        .union(&self.qargs_with_non_global_operation[qarg])
+                        .cloned()
+                        .collect();
                 }
-            } else {
-                expanded_target = expanded_target
-                    .union(&self.qargs_with_non_global_operation[qarg])
-                    .cloned()
-                    .collect();
             }
             let local_basis_transforms = basis_search(
                 &mut self.equiv_lib,
@@ -262,7 +262,7 @@ impl BasisTranslator {
         ) -> PyResult<()> {
             for node in circuit.op_nodes(true) {
                 let Some(NodeType::Operation(operation)) = circuit.dag().node_weight(node) else {
-                    continue;
+                    unreachable!("Circuit op_nodes() returned a non-op node.")
                 };
                 if !circuit.has_calibration_for_index(py, node)?
                     && circuit.get_qargs(operation.qubits).len() >= min_qubits
@@ -271,7 +271,7 @@ impl BasisTranslator {
                 }
                 if operation.op.control_flow() {
                     let OperationRef::Instruction(inst) = operation.op.view() else {
-                        continue;
+                        unreachable!("Control flow operation is not an instance of PyInstruction.")
                     };
                     let inst_bound = inst.instruction.bind(py);
                     for block in inst_bound.getattr("blocks")?.iter()? {
@@ -332,9 +332,8 @@ impl BasisTranslator {
             qargs_local_source_basis.cloned().unwrap_or_default();
 
         for node in dag.op_nodes(true) {
-            let node_obj = match dag.dag().node_weight(node).unwrap() {
-                NodeType::Operation(op) => op,
-                _ => unreachable!("This was supposed to be an op_node."),
+            let Some(NodeType::Operation(node_obj)) = dag.dag().node_weight(node) else {
+                unreachable!("This was supposed to be an op_node.")
             };
             let qargs = dag.get_qargs(node_obj.qubits);
             if dag.has_calibration_for_index(py, node)? || qargs.len() < self.min_qubits {
@@ -370,8 +369,8 @@ impl BasisTranslator {
                 .contains_key(&Some(physical_qargs.iter().copied().collect()))
                 || qargs_is_superset
             {
-                let _ = &qargs_local_source_basis
-                    .entry(Some(physical_qargs.iter().copied().collect()))
+                qargs_local_source_basis
+                    .entry(Some(physical_qargs_as_set.iter().copied().collect()))
                     .and_modify(|set| {
                         set.insert((node_obj.op.name().to_string(), node_obj.op.num_qubits()));
                     })
@@ -391,8 +390,10 @@ impl BasisTranslator {
                 let bound_inst = op.instruction.bind(py);
                 let blocks = bound_inst.getattr("blocks")?.iter()?;
                 for block in blocks {
+                    let circuit_data_block =
+                        block?.getattr("_data")?.downcast_into::<CircuitData>()?;
                     let block: DAGCircuit =
-                        circuit_to_dag(py, block?.extract()?, true, None, None)?;
+                        DAGCircuit::from_circuit_data(py, circuit_data_block.extract()?, true)?;
                     (source_basis, qargs_local_source_basis) = self.extract_basis_target(
                         py,
                         &block,
@@ -433,8 +434,14 @@ impl BasisTranslator {
                     let blocks = bound_obj.getattr("blocks")?;
                     for block in blocks.iter()? {
                         let block = block?;
-                        let dag_block = circuit_to_dag(py, block.extract()?, true, None, None)?;
-                        let (updated_dag, is_updated) = self.apply_translation(
+                        let circuit_data_block: CircuitData = block
+                            .getattr("_data")?
+                            .downcast_into::<CircuitData>()?
+                            .extract()?;
+                        let dag_block: DAGCircuit =
+                            DAGCircuit::from_circuit_data(py, circuit_data_block, true)?;
+                        let updated_dag: DAGCircuit;
+                        (updated_dag, is_updated) = self.apply_translation(
                             py,
                             &dag_block,
                             target_basis,
@@ -458,8 +465,33 @@ impl BasisTranslator {
                         new_op.operation,
                         node_qarg,
                         node_carg,
-                        Some(new_op.params),
+                        if new_op.params.is_empty() {
+                            None
+                        } else {
+                            Some(new_op.params)
+                        },
                         new_op.extra_attrs,
+                        #[cfg(feature = "cache_pygates")]
+                        None,
+                    )?;
+                } else {
+                    out_dag.apply_operation_back(
+                        py,
+                        node_obj.op.clone(),
+                        node_qarg,
+                        node_carg,
+                        if node_obj.params_view().is_empty() {
+                            None
+                        } else {
+                            Some(
+                                node_obj
+                                    .params_view()
+                                    .iter()
+                                    .map(|param| param.clone_ref(py))
+                                    .collect(),
+                            )
+                        },
+                        node_obj.extra_attrs.clone(),
                         #[cfg(feature = "cache_pygates")]
                         None,
                     )?;
@@ -474,12 +506,43 @@ impl BasisTranslator {
                 && self.qargs_with_non_global_operation[&node_qarg_as_physical]
                     .contains(node_obj.op.name())
             {
-                out_dag.push_back(py, node_obj)?;
+                // out_dag.push_back(py, node_obj)?;
+                out_dag.apply_operation_back(
+                    py,
+                    node_obj.op.clone(),
+                    node_qarg,
+                    node_carg,
+                    if node_obj.params_view().is_empty() {None} else {
+                        Some(node_obj
+                            .params_view()
+                            .iter()
+                            .map(|param| param.clone_ref(py))
+                            .collect()
+                    )},
+                    node_obj.extra_attrs,
+                    #[cfg(feature = "cache_pygates")]
+                    None,
+                )?;
                 continue;
             }
 
             if dag.has_calibration_for_index(py, node)? {
-                out_dag.push_back(py, node_obj)?;
+                out_dag.apply_operation_back(
+                    py,
+                    node_obj.op.clone(),
+                    node_qarg,
+                    node_carg,
+                    if node_obj.params_view().is_empty() {None} else {
+                        Some(node_obj
+                            .params_view()
+                            .iter()
+                            .map(|param| param.clone_ref(py))
+                            .collect()
+                    )},
+                    node_obj.extra_attrs,
+                    #[cfg(feature = "cache_pygates")]
+                    None,
+                )?;
                 continue;
             }
             let unique_qargs: Option<Qargs> = if qubit_set.is_empty() {
@@ -545,18 +608,17 @@ impl BasisTranslator {
                     .iter()
                     .map(|clbit| old_cargs[clbit.0 as usize])
                     .collect();
-                let mut new_params: SmallVec<[Param; 3]> = SmallVec::new();
 
+                let mut new_params: SmallVec<[Param; 3]> = SmallVec::new();
                 if inner_node
                     .params_view()
                     .iter()
                     .any(|param| matches!(param, Param::ParameterExpression(_)))
                 {
                     for param in inner_node.params_view() {
-                        if let Param::ParameterExpression(param) = param {
-                            let bound_param = param.bind(py);
-                            let exp_params =
-                                bound_param.getattr(intern!(py, "parameters"))?.iter()?;
+                        if let Param::ParameterExpression(param_obj) = param {
+                            let bound_param = param_obj.bind(py);
+                            let exp_params = param.iter_parameters(py)?;
                             let bind_dict = PyDict::new_bound(py);
                             for key in exp_params {
                                 let key = key?;
@@ -586,17 +648,38 @@ impl BasisTranslator {
                         }
                     }
                 }
-                let new_op = if matches!(inner_node.op.view(), OperationRef::Standard(_)) {
-                    inner_node.op.py_copy(py)?
+                let new_op = if !matches!(inner_node.op.view(), OperationRef::Standard(_)) {
+                    let new_op = inner_node.op.py_copy(py)?;
+                    match new_op.view() {
+                        OperationRef::Instruction(inst) => inst
+                            .instruction
+                            .bind(py)
+                            .setattr("params", (new_params.clone(),))?,
+                        OperationRef::Gate(gate) => gate
+                            .gate
+                            .bind(py)
+                            .setattr("params", (new_params.clone(),))?,
+                        OperationRef::Operation(oper) => oper
+                            .operation
+                            .bind(py)
+                            .setattr("params", (new_params.clone(),))?,
+                        _ => (),
+                    }
+                    new_op
                 } else {
                     inner_node.op.clone()
                 };
+
                 dag.apply_operation_back(
                     py,
                     new_op,
                     &new_qubits,
                     &new_clbits,
-                    Some(new_params),
+                    if new_params.is_empty() {
+                        None
+                    } else {
+                        Some(new_params)
+                    },
                     inner_node.extra_attrs.clone(),
                     #[cfg(feature = "cache_pygates")]
                     None,
@@ -653,12 +736,27 @@ impl BasisTranslator {
                     .iter()
                     .map(|clbit| old_cargs[clbit.0 as usize])
                     .collect();
-                let new_op = if matches!(inner_node.op.view(), OperationRef::Standard(_)) {
-                    inner_node.op.py_copy(py)?
+                let new_op = if !matches!(inner_node.op.view(), OperationRef::Standard(_)) {
+                    let new_node = inner_node.op.py_copy(py)?;
+                    match new_node.view() {
+                        OperationRef::Gate(gate) => {
+                            gate.gate.setattr(py, "condition", inner_node.condition())?
+                        }
+                        OperationRef::Instruction(inst) => {
+                            inst.instruction
+                                .setattr(py, "condition", inner_node.condition())?
+                        }
+                        OperationRef::Operation(oper) => {
+                            oper.operation
+                                .setattr(py, "condition", inner_node.condition())?
+                        }
+                        _ => (),
+                    }
+                    new_node
                 } else {
                     inner_node.op.clone()
                 };
-                let new_params = inner_node
+                let new_params: SmallVec<[Param; 3]> = inner_node
                     .params_view()
                     .iter()
                     .map(|param| param.clone_ref(py))
@@ -669,7 +767,11 @@ impl BasisTranslator {
                     new_op,
                     &new_qubits,
                     &new_clbits,
-                    Some(new_params),
+                    if new_params.is_empty() {
+                        None
+                    } else {
+                        Some(new_params)
+                    },
                     new_extra_props,
                     #[cfg(feature = "cache_pygates")]
                     None,

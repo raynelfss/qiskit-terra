@@ -5074,7 +5074,7 @@ impl DAGCircuit {
     /// This is mostly used to apply operations from one DAG to
     /// another that was created from the first via
     /// [DAGCircuit::copy_empty_like].
-    pub fn push_back(&mut self, py: Python, instr: PackedInstruction) -> PyResult<NodeIndex> {
+    fn push_back(&mut self, py: Python, instr: PackedInstruction) -> PyResult<NodeIndex> {
         let op_name = instr.op.name();
         let (all_cbits, vars): (Vec<Clbit>, Option<Vec<PyObject>>) = {
             if self.may_have_additional_wires(py, &instr) {
@@ -5194,7 +5194,6 @@ impl DAGCircuit {
     }
 
     /// Apply a [PackedOperation] to the back of the circuit.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_operation_back(
         &mut self,
         py: Python,
@@ -5219,7 +5218,6 @@ impl DAGCircuit {
     }
 
     /// Apply a [PackedOperation] to the front of the circuit.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_operation_front(
         &mut self,
         py: Python,
