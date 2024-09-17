@@ -87,7 +87,11 @@ pub(super) fn compose_transforms<'a>(
             gate_obj.operation,
             &qubits,
             &[],
-            Some(gate_obj.params),
+            if gate_obj.params.is_empty() {
+                None
+            } else {
+                Some(gate_obj.params)
+            },
             gate_obj.extra_attrs,
             #[cfg(feature = "cache_pygates")]
             Some(gate.into()),

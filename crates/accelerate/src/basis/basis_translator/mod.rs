@@ -26,9 +26,11 @@ pub mod compose_transforms;
 use pyo3::types::IntoPyDict;
 use pyo3::types::PyComplex;
 use pyo3::types::PyDict;
+use pyo3::types::PyTuple;
 use qiskit_circuit::circuit_instruction::OperationFromPython;
-use qiskit_circuit::imports::DAG_TO_CIRCUIT;
+use qiskit_circuit::converters::dag_to_circuit;
 use qiskit_circuit::imports::PARAMETER_EXPRESSION;
+use qiskit_circuit::imports::QUANTUM_CIRCUIT;
 use qiskit_circuit::operations::Param;
 use qiskit_circuit::packed_instruction::PackedInstruction;
 use qiskit_circuit::Clbit;
@@ -485,13 +487,12 @@ impl BasisTranslator {
             };
             let node_qarg = dag.get_qargs(node_obj.qubits);
             let node_carg = dag.get_cargs(node_obj.clbits);
-            let qubit_set: HashSet<qiskit_circuit::Qubit> =
-                HashSet::from_iter(node_qarg.iter().copied());
+            let qubit_set: HashSet<Qubit> = HashSet::from_iter(node_qarg.iter().copied());
             let mut new_op: Option<OperationFromPython> = None;
             if target_basis.contains(node_obj.op.name()) || node_qarg.len() < self.min_qubits {
                 if node_obj.op.control_flow() {
                     let OperationRef::Instruction(control_op) = node_obj.op.view() else {
-                        unreachable!("This instruction says it is of control flow type, but is not an Instruction instance")
+                        unreachable!("This instruction {} says it is of control flow type, but is not an Instruction instance", node_obj.op.name())
                     };
                     let mut flow_blocks = vec![];
                     let bound_obj = control_op.instruction.bind(py);
@@ -513,7 +514,10 @@ impl BasisTranslator {
                             extra_inst_map,
                         )?;
                         let flow_circ_block = if is_updated {
-                            DAG_TO_CIRCUIT.get_bound(py).call1((updated_dag,))?
+                            let block: CircuitData = dag_to_circuit(py, &updated_dag, true)?;
+                            QUANTUM_CIRCUIT
+                                .get_bound(py)
+                                .call_method1("_from_circuit_data", (block,))?
                         } else {
                             block
                         };
@@ -681,12 +685,22 @@ impl BasisTranslator {
                     .map(|clbit| old_cargs[clbit.0 as usize])
                     .collect();
 
-                let mut new_params: SmallVec<[Param; 3]> = SmallVec::new();
+                let mut new_params: SmallVec<[Param; 3]> = node
+                    .params_view()
+                    .iter()
+                    .map(|param| param.clone_ref(py))
+                    .collect();
+                let new_op = if !matches!(inner_node.op.view(), OperationRef::Standard(_)) {
+                    inner_node.op.py_copy(py)?
+                } else {
+                    inner_node.op.clone()
+                };
                 if inner_node
                     .params_view()
                     .iter()
                     .any(|param| matches!(param, Param::ParameterExpression(_)))
                 {
+                    new_params = SmallVec::new();
                     for param in inner_node.params_view() {
                         if let Param::ParameterExpression(param_obj) = param {
                             let bound_param = param_obj.bind(py);
@@ -697,21 +711,25 @@ impl BasisTranslator {
                                 bind_dict.set_item(&key, parameter_map.get_item(&key)?)?;
                             }
                             let mut new_value: Bound<PyAny>;
-                            if bind_dict.values().iter().any(|param| {
+                            let comparison = bind_dict.values().iter().any(|param| {
                                 param
                                     .is_instance(PARAMETER_EXPRESSION.get_bound(py))
                                     .is_ok_and(|x| x)
-                            }) {
+                            });
+                            if comparison {
                                 new_value = bound_param.clone();
                                 for items in bind_dict.items() {
-                                    new_value = new_value
-                                        .call_method1(intern!(py, "assign"), items.downcast()?)?;
+                                    new_value = new_value.call_method1(
+                                        intern!(py, "assign"),
+                                        items.downcast::<PyTuple>()?,
+                                    )?;
                                 }
                             } else {
                                 new_value =
                                     bound_param.call_method1(intern!(py, "bind"), (&bind_dict,))?;
                             }
-                            if !new_value.getattr(intern!(py, "parameters"))?.is_truthy()? {
+                            let eval = new_value.getattr(intern!(py, "parameters"))?;
+                            if !eval.is_truthy()? {
                                 new_value = new_value.call_method0(intern!(py, "numeric"))?;
                             }
                             new_params.push(new_value.extract()?);
@@ -719,28 +737,24 @@ impl BasisTranslator {
                             new_params.push(param.clone_ref(py));
                         }
                     }
-                }
-                let new_op = if !matches!(inner_node.op.view(), OperationRef::Standard(_)) {
-                    let new_op = inner_node.op.py_copy(py)?;
-                    match new_op.view() {
-                        OperationRef::Instruction(inst) => inst
-                            .instruction
-                            .bind(py)
-                            .setattr("params", (new_params.clone(),))?,
-                        OperationRef::Gate(gate) => gate
-                            .gate
-                            .bind(py)
-                            .setattr("params", (new_params.clone(),))?,
-                        OperationRef::Operation(oper) => oper
-                            .operation
-                            .bind(py)
-                            .setattr("params", (new_params.clone(),))?,
-                        _ => (),
+                    if !matches!(new_op.view(), OperationRef::Standard(_)) {
+                        match new_op.view() {
+                            OperationRef::Instruction(inst) => inst
+                                .instruction
+                                .bind(py)
+                                .setattr("params", (new_params.clone(),))?,
+                            OperationRef::Gate(gate) => gate
+                                .gate
+                                .bind(py)
+                                .setattr("params", (new_params.clone(),))?,
+                            OperationRef::Operation(oper) => oper
+                                .operation
+                                .bind(py)
+                                .setattr("params", (new_params.clone(),))?,
+                            _ => (),
+                        }
                     }
-                    new_op
-                } else {
-                    inner_node.op.clone()
-                };
+                }
 
                 dag.apply_operation_back(
                     py,
