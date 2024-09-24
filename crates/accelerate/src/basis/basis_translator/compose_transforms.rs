@@ -11,56 +11,47 @@
 // that they have been altered from the originals.
 
 use hashbrown::{HashMap, HashSet};
-
 use pyo3::prelude::*;
 use qiskit_circuit::circuit_instruction::OperationFromPython;
-use qiskit_circuit::converters::circuit_to_dag;
-use qiskit_circuit::imports::{PARAMETER_VECTOR, QUANTUM_REGISTER};
-use qiskit_circuit::operations::OperationRef;
-use qiskit_circuit::packed_instruction::PackedInstruction;
+use qiskit_circuit::imports::{GATE, PARAMETER_VECTOR, QUANTUM_REGISTER};
+use qiskit_circuit::parameter_table::ParameterUuid;
 use qiskit_circuit::Qubit;
 use qiskit_circuit::{
+    circuit_data::CircuitData,
     dag_circuit::{DAGCircuit, NodeType},
-    imports::GATE,
     operations::{Operation, Param},
-    parameter_table::ParameterUuid,
 };
 use smallvec::SmallVec;
 
-use super::basis_search::BasisTransforms;
+use crate::equivalence::CircuitFromPython;
 
 // Custom types
+pub type GateIdentifier = (String, u32);
+pub type BasisTransformIn = (SmallVec<[Param; 3]>, CircuitFromPython);
+pub type BasisTransformOut = (SmallVec<[Param; 3]>, DAGCircuit);
 
 #[pyfunction(name = "compose_transforms")]
 pub(super) fn py_compose_transforms(
     py: Python,
-    basis_transforms: BasisTransforms,
-    source_basis: HashSet<(String, u32)>,
+    basis_transforms: Vec<(GateIdentifier, BasisTransformIn)>,
+    source_basis: HashSet<GateIdentifier>,
     source_dag: &DAGCircuit,
-) -> PyResult<HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)>> {
+) -> PyResult<HashMap<GateIdentifier, BasisTransformOut>> {
     compose_transforms(py, &basis_transforms, &source_basis, source_dag)
-        .map(|ret| ret.into_iter().collect())
 }
 
 pub(super) fn compose_transforms<'a>(
     py: Python,
-    basis_transforms: &'a BasisTransforms,
-    source_basis: &'a HashSet<(String, u32)>,
+    basis_transforms: &'a [(GateIdentifier, BasisTransformIn)],
+    source_basis: &'a HashSet<GateIdentifier>,
     source_dag: &'a DAGCircuit,
-) -> PyResult<HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)>> {
-    let example_gates = *get_example_gates(py, source_dag, None)?;
-    let mut mapped_instructions: HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)> =
-        HashMap::new();
+) -> PyResult<HashMap<GateIdentifier, BasisTransformOut>> {
+    let mut example_gates: HashMap<GateIdentifier, usize> = HashMap::default();
+    get_gates_num_params(source_dag, &mut example_gates)?;
+    let mut mapped_instructions: HashMap<GateIdentifier, BasisTransformOut> = HashMap::new();
 
     for (gate_name, gate_num_qubits) in source_basis.iter().cloned() {
-        // Need to grab a gate instance to find num_qubits and num_params.
-        // Can be removed following https://github.com/Qiskit/qiskit-terra/pull/3947 .
-        let example_gate = &example_gates[&(gate_name.clone(), gate_num_qubits)];
-        let num_params = example_gate
-            .params
-            .as_ref()
-            .map(|x| x.len())
-            .unwrap_or_default();
+        let num_params = example_gates[&(gate_name.clone(), gate_num_qubits)];
 
         let placeholder_params: SmallVec<[Param; 3]> = PARAMETER_VECTOR
             .get_bound(py)
@@ -81,7 +72,7 @@ pub(super) fn compose_transforms<'a>(
                 .collect::<SmallVec<[Param; 3]>>(),
         ))?;
         let gate_obj: OperationFromPython = gate.extract()?;
-        let qubits: Vec<Qubit> = (0..gate_num_qubits).map(Qubit).collect();
+        let qubits: Vec<Qubit> = (0..dag.num_qubits() as u32).map(Qubit).collect();
         dag.apply_operation_back(
             py,
             gate_obj.operation,
@@ -96,14 +87,11 @@ pub(super) fn compose_transforms<'a>(
             #[cfg(feature = "cache_pygates")]
             Some(gate.into()),
         )?;
-        mapped_instructions.insert(
-            (gate_name.clone(), gate_num_qubits),
-            (placeholder_params, dag),
-        );
+        mapped_instructions.insert((gate_name, gate_num_qubits), (placeholder_params, dag));
 
-        for (gate_name, gate_num_qubits, equiv_params, equiv) in basis_transforms {
-            for ((_mapped_instr_name, _), (_dag_params, dag)) in &mut mapped_instructions {
-                let doomed_nodes = dag
+        for ((gate_name, gate_num_qubits), (equiv_params, equiv)) in basis_transforms {
+            for (_, dag) in &mut mapped_instructions.values_mut() {
+                let nodes_to_replace = dag
                     .op_nodes(true)
                     .filter_map(|node| {
                         if let Some(NodeType::Operation(op)) = dag.dag().node_weight(node) {
@@ -125,7 +113,7 @@ pub(super) fn compose_transforms<'a>(
                         }
                     })
                     .collect::<Vec<_>>();
-                for (node, params) in doomed_nodes {
+                for (node, params) in nodes_to_replace {
                     let param_mapping: HashMap<ParameterUuid, Param> = equiv_params
                         .iter()
                         .map(|x| ParameterUuid::from_parameter(x.to_object(py).bind(py)))
@@ -149,27 +137,50 @@ pub(super) fn compose_transforms<'a>(
     Ok(mapped_instructions)
 }
 
-fn get_example_gates(
-    py: Python,
+/// `DAGCircuit` variant.
+///
+/// Gets the identifier of a gate instance (name, number of qubits) mapped to the
+/// number of parameters it contains currently.
+fn get_gates_num_params(
     dag: &DAGCircuit,
-    example_gates: Option<Box<HashMap<(String, u32), PackedInstruction>>>,
-) -> PyResult<Box<HashMap<(String, u32), PackedInstruction>>> {
-    let mut example_gates = example_gates.unwrap_or_default();
+    example_gates: &mut HashMap<GateIdentifier, usize>,
+) -> PyResult<()> {
     for node in dag.op_nodes(true) {
         if let Some(NodeType::Operation(op)) = dag.dag().node_weight(node) {
-            example_gates.insert((op.op.name().to_string(), op.op.num_qubits()), op.clone());
+            example_gates.insert(
+                (op.op.name().to_string(), op.op.num_qubits()),
+                op.params_view().len(),
+            );
             if op.op.control_flow() {
-                let OperationRef::Instruction(inst) = op.op.view() else {
-                    panic!("Control flow op can only be an instruction")
-                };
-                let inst_bound = inst.instruction.bind(py);
-                let blocks = inst_bound.getattr("blocks")?;
-                for block in blocks.iter()? {
-                    let block_as_dag = circuit_to_dag(py, block?.extract()?, true, None, None)?;
-                    example_gates = get_example_gates(py, &block_as_dag, Some(example_gates))?;
+                let blocks = op.op.blocks();
+                for block in blocks {
+                    get_gates_num_params_circuit(&block, example_gates)?;
                 }
             }
         }
     }
-    Ok(example_gates)
+    Ok(())
+}
+
+/// `CircuitData` variant.
+///
+/// Gets the identifier of a gate instance (name, number of qubits) mapped to the
+/// number of parameters it contains currently.
+fn get_gates_num_params_circuit(
+    circuit: &CircuitData,
+    example_gates: &mut HashMap<GateIdentifier, usize>,
+) -> PyResult<()> {
+    for inst in circuit.iter() {
+        example_gates.insert(
+            (inst.op.name().to_string(), inst.op.num_qubits()),
+            inst.params_view().len(),
+        );
+        if inst.op.control_flow() {
+            let blocks = inst.op.blocks();
+            for block in blocks {
+                get_gates_num_params_circuit(&block, example_gates)?;
+            }
+        }
+    }
+    Ok(())
 }

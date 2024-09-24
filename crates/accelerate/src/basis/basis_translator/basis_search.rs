@@ -15,12 +15,13 @@ use std::cell::RefCell;
 use hashbrown::{HashMap, HashSet};
 use pyo3::prelude::*;
 
-use crate::equivalence::{CircuitRep, EdgeData, Equivalence, EquivalenceLibrary, Key, NodeData};
-use qiskit_circuit::operations::{Operation, Param};
+use crate::equivalence::{EdgeData, Equivalence, EquivalenceLibrary, Key, NodeData};
+use qiskit_circuit::operations::Operation;
 use rustworkx_core::petgraph::stable_graph::{EdgeReference, NodeIndex, StableDiGraph};
 use rustworkx_core::petgraph::visit::Control;
 use rustworkx_core::traversal::{dijkstra_search, DijkstraEvent};
-use smallvec::SmallVec;
+
+use super::compose_transforms::{BasisTransformIn, GateIdentifier};
 
 #[pyfunction]
 #[pyo3(name = "basis_search")]
@@ -52,7 +53,7 @@ pub(crate) fn py_basis_search(
     .into_py(py)
 }
 
-pub(crate) type BasisTransforms = Vec<(String, u32, SmallVec<[Param; 3]>, CircuitRep)>;
+pub(crate) type BasisTransforms = Vec<(GateIdentifier, BasisTransformIn)>;
 /// Search for a set of transformations from source_basis to target_basis.
 ///
 /// Performs a Dijkstra search algorithm on the `EquivalenceLibrary`'s core graph
@@ -71,7 +72,7 @@ pub(crate) fn basis_search(
     let predecessors: RefCell<HashMap<(String, u32), Equivalence>> =
         RefCell::new(HashMap::default());
     let opt_cost_map: RefCell<HashMap<(String, u32), u32>> = RefCell::new(HashMap::default());
-    let mut basis_transforms: Vec<(String, u32, SmallVec<[Param; 3]>, CircuitRep)> = vec![];
+    let mut basis_transforms: Vec<(GateIdentifier, BasisTransformIn)> = vec![];
 
     // Initialize visitor attributes:
     initialize_num_gates_remain_for_rule(&equiv_lib.graph, &mut num_gates_remaining_for_rule);
@@ -163,12 +164,9 @@ pub(crate) fn basis_search(
                         borrowed_cost_map.insert(gate.clone(), score);
                     }
                     if let Some(rule) = predecessors.borrow().get(&gate) {
-                        // TODO: Logger
                         basis_transforms.push((
-                            gate_key.name.to_string(),
-                            gate_key.num_qubits,
-                            rule.params.clone(),
-                            rule.circuit.clone(),
+                            (gate_key.name.to_string(), gate_key.num_qubits),
+                            (rule.params.clone(), rule.circuit.clone()),
                         ));
                     }
 

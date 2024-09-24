@@ -121,14 +121,14 @@ pub struct Equivalence {
     #[pyo3(get)]
     pub params: SmallVec<[Param; 3]>,
     #[pyo3(get)]
-    pub circuit: CircuitRep,
+    pub circuit: CircuitFromPython,
 }
 
 #[pymethods]
 impl Equivalence {
     #[new]
     #[pyo3(signature = (params, circuit))]
-    fn new(params: SmallVec<[Param; 3]>, circuit: CircuitRep) -> Self {
+    fn new(params: SmallVec<[Param; 3]>, circuit: CircuitFromPython) -> Self {
         Self { circuit, params }
     }
 
@@ -287,15 +287,13 @@ impl<'py> FromPyObject<'py> for GateOper {
 /// Representation of QuantumCircuit which the original circuit object + an
 /// instance of `CircuitData`.
 #[derive(Debug, Clone)]
-pub struct CircuitRep(pub CircuitData);
+pub struct CircuitFromPython(pub CircuitData);
 
-impl FromPyObject<'_> for CircuitRep {
+impl FromPyObject<'_> for CircuitFromPython {
     fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
         if ob.is_instance(QUANTUM_CIRCUIT.get_bound(ob.py()))? {
-            let data: Bound<PyAny> = ob.getattr("_data")?;
-            let data_downcast: Bound<CircuitData> = data.downcast_into()?;
-            let data_extract: CircuitData = data_downcast.extract()?;
-            Ok(Self(data_extract))
+            let data: CircuitData = ob.getattr("_data")?.extract()?;
+            Ok(Self(data))
         } else {
             Err(PyTypeError::new_err(
                 "Provided object was not an instance of QuantumCircuit",
@@ -304,7 +302,7 @@ impl FromPyObject<'_> for CircuitRep {
     }
 }
 
-impl IntoPy<PyObject> for CircuitRep {
+impl IntoPy<PyObject> for CircuitFromPython {
     fn into_py(self, py: Python<'_>) -> PyObject {
         QUANTUM_CIRCUIT
             .get_bound(py)
@@ -314,7 +312,7 @@ impl IntoPy<PyObject> for CircuitRep {
     }
 }
 
-impl ToPyObject for CircuitRep {
+impl ToPyObject for CircuitFromPython {
     fn to_object(&self, py: Python<'_>) -> PyObject {
         self.clone().into_py(py)
     }
@@ -381,7 +379,7 @@ impl EquivalenceLibrary {
         &mut self,
         py: Python,
         gate: GateOper,
-        equivalent_circuit: CircuitRep,
+        equivalent_circuit: CircuitFromPython,
     ) -> PyResult<()> {
         self.add_equivalence(py, &gate, equivalent_circuit)
     }
@@ -410,7 +408,12 @@ impl EquivalenceLibrary {
     ///     gate (Gate): A Gate instance.
     ///     entry (List['QuantumCircuit']) : A list of QuantumCircuits, each
     ///         equivalently implementing the given Gate.
-    fn set_entry(&mut self, py: Python, gate: GateOper, entry: Vec<CircuitRep>) -> PyResult<()> {
+    fn set_entry(
+        &mut self,
+        py: Python,
+        gate: GateOper,
+        entry: Vec<CircuitFromPython>,
+    ) -> PyResult<()> {
         for equiv in entry.iter() {
             raise_if_shape_mismatch(&gate, equiv)?;
             raise_if_param_mismatch(py, &gate.params, equiv.0.unsorted_parameters(py)?)?;
@@ -578,7 +581,7 @@ impl EquivalenceLibrary {
         &mut self,
         py: Python,
         gate: &GateOper,
-        equivalent_circuit: CircuitRep,
+        equivalent_circuit: CircuitFromPython,
     ) -> PyResult<()> {
         raise_if_shape_mismatch(gate, &equivalent_circuit)?;
         raise_if_param_mismatch(
@@ -695,7 +698,7 @@ fn raise_if_param_mismatch(
     Ok(())
 }
 
-fn raise_if_shape_mismatch(gate: &GateOper, circuit: &CircuitRep) -> PyResult<()> {
+fn raise_if_shape_mismatch(gate: &GateOper, circuit: &CircuitFromPython) -> PyResult<()> {
     let op_ref = gate.operation.view();
     if op_ref.num_qubits() != circuit.0.num_qubits() as u32
         || op_ref.num_clbits() != circuit.0.num_clbits() as u32
@@ -713,7 +716,11 @@ fn raise_if_shape_mismatch(gate: &GateOper, circuit: &CircuitRep) -> PyResult<()
     Ok(())
 }
 
-fn rebind_equiv(py: Python, equiv: Equivalence, query_params: &[Param]) -> PyResult<CircuitRep> {
+fn rebind_equiv(
+    py: Python,
+    equiv: Equivalence,
+    query_params: &[Param],
+) -> PyResult<CircuitFromPython> {
     let (equiv_params, mut equiv_circuit) = (equiv.params, equiv.circuit);
     let param_mapping: PyResult<IndexMap<ParameterUuid, &Param>> = equiv_params
         .iter()

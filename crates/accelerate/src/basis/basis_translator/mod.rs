@@ -10,6 +10,8 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
+use compose_transforms::BasisTransformIn;
+use compose_transforms::GateIdentifier;
 #[cfg(feature = "cache_pygates")]
 use once_cell::sync::OnceCell;
 
@@ -43,13 +45,15 @@ use qiskit_circuit::{
 };
 use smallvec::SmallVec;
 
-use crate::equivalence::CircuitRep;
 use crate::equivalence::EquivalenceLibrary;
 use crate::nlayout::PhysicalQubit;
 use crate::target_transpiler::exceptions::TranspilerError;
 use crate::target_transpiler::{Qargs, Target};
 
-#[pyclass(name = "CoreBasisTranslator")]
+#[pyclass(
+    name = "CoreBasisTranslator",
+    module = "qiskit._accelerate.basis.basis_translator"
+)]
 pub struct BasisTranslator {
     #[pyo3(get)]
     equiv_lib: EquivalenceLibrary,
@@ -71,7 +75,6 @@ type ExtraInstructionMap<'a> = HashMap<&'a Option<Qargs>, InstMap>;
 #[pymethods]
 impl BasisTranslator {
     #[new]
-    #[pyo3(signature = (equiv_lib, target_basis, min_qubits = 0, target = None))]
     fn new(
         equiv_lib: EquivalenceLibrary,
         target_basis: HashSet<String>,
@@ -166,7 +169,7 @@ impl BasisTranslator {
         );
         let mut qarg_local_basis_transforms: HashMap<
             Option<Qargs>,
-            Vec<(String, u32, SmallVec<[Param; 3]>, CircuitRep)>,
+            Vec<(GateIdentifier, BasisTransformIn)>,
         > = HashMap::default();
         for (qarg, local_source_basis) in qargs_local_source_basis.iter() {
             // For any multiqubit operation that contains a subset of qubits that
@@ -314,6 +317,17 @@ impl BasisTranslator {
             .unwrap()
             .extract()?;
         Ok(())
+    }
+
+    fn __getnewargs__(slf: PyRef<Self>) -> PyResult<PyObject> {
+        let py = slf.py();
+        Ok((
+            slf.equiv_lib.clone(),
+            slf.target_basis.clone(),
+            slf.min_qubits,
+            slf.target.clone(),
+        )
+            .into_py(py))
     }
 }
 
@@ -664,12 +678,12 @@ impl BasisTranslator {
                     .map(|clbit| old_cargs[clbit.0 as usize])
                     .collect();
 
-                let mut new_params: SmallVec<[Param; 3]> = node
+                let mut new_params: SmallVec<[Param; 3]> = inner_node
                     .params_view()
                     .iter()
                     .map(|param| param.clone_ref(py))
                     .collect();
-                let new_op = if !matches!(inner_node.op.view(), OperationRef::Standard(_)) {
+                let new_op = if inner_node.op.try_standard_gate().is_none() {
                     inner_node.op.py_copy(py)?
                 } else {
                     inner_node.op.clone()
@@ -708,33 +722,31 @@ impl BasisTranslator {
                                     bound_param.call_method1(intern!(py, "bind"), (&bind_dict,))?;
                             }
                             let eval = new_value.getattr(intern!(py, "parameters"))?;
-                            if !eval.is_truthy()? {
+                            if eval.is_empty()? {
                                 new_value = new_value.call_method0(intern!(py, "numeric"))?;
                             }
-                            new_params.push(new_value.extract()?);
+                            new_params.push(Param::extract_no_coerce(&new_value)?);
                         } else {
                             new_params.push(param.clone_ref(py));
                         }
                     }
-                    if !matches!(new_op.view(), OperationRef::Standard(_)) {
+                    if new_op.try_standard_gate().is_none() {
                         match new_op.view() {
                             OperationRef::Instruction(inst) => inst
                                 .instruction
                                 .bind(py)
-                                .setattr("params", (new_params.clone(),))?,
-                            OperationRef::Gate(gate) => gate
-                                .gate
-                                .bind(py)
-                                .setattr("params", (new_params.clone(),))?,
+                                .setattr("params", new_params.clone())?,
+                            OperationRef::Gate(gate) => {
+                                gate.gate.bind(py).setattr("params", new_params.clone())?
+                            }
                             OperationRef::Operation(oper) => oper
                                 .operation
                                 .bind(py)
-                                .setattr("params", (new_params.clone(),))?,
+                                .setattr("params", new_params.clone())?,
                             _ => (),
                         }
                     }
                 }
-
                 dag.apply_operation_back(
                     py,
                     new_op,
@@ -801,7 +813,7 @@ impl BasisTranslator {
                     .iter()
                     .map(|clbit| old_cargs[clbit.0 as usize])
                     .collect();
-                let new_op = if !matches!(inner_node.op.view(), OperationRef::Standard(_)) {
+                let new_op = if inner_node.op.try_standard_gate().is_none() {
                     let new_node = inner_node.op.py_copy(py)?;
                     match new_node.view() {
                         OperationRef::Gate(gate) => {
