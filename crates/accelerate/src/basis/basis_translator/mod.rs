@@ -28,6 +28,7 @@ use pyo3::types::PyComplex;
 use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
 use qiskit_circuit::circuit_instruction::OperationFromPython;
+use qiskit_circuit::converters::circuit_to_dag;
 use qiskit_circuit::converters::dag_to_circuit;
 use qiskit_circuit::imports::PARAMETER_EXPRESSION;
 use qiskit_circuit::imports::QUANTUM_CIRCUIT;
@@ -116,9 +117,10 @@ impl BasisTranslator {
         }
 
         let basic_instrs: HashSet<String>;
-        let source_basis: HashSet<(String, u32)>;
+        let mut source_basis: HashSet<(String, u32)> = HashSet::default();
         let mut target_basis: HashSet<String>;
-        let qargs_local_source_basis: HashMap<Option<Qargs>, HashSet<(String, u32)>>;
+        let mut qargs_local_source_basis: HashMap<Option<Qargs>, HashSet<(String, u32)>> =
+            HashMap::default();
         if let Some(target) = self.target.as_ref() {
             basic_instrs = ["barrier", "snapshot", "store"]
                 .into_iter()
@@ -135,8 +137,7 @@ impl BasisTranslator {
                 .difference(&non_global_str)
                 .map(|x| x.to_string())
                 .collect();
-            (source_basis, qargs_local_source_basis) =
-                self.extract_basis_target(py, &dag, None, None)?;
+            self.extract_basis_target(py, &dag, &mut source_basis, &mut qargs_local_source_basis)?;
         } else {
             basic_instrs = ["measure", "reset", "barrier", "snapshot", "delay", "store"]
                 .into_iter()
@@ -387,16 +388,9 @@ impl BasisTranslator {
         &self,
         py: Python,
         dag: &DAGCircuit,
-        source_basis: Option<&HashSet<(String, u32)>>,
-        qargs_local_source_basis: Option<&HashMap<Option<Qargs>, HashSet<(String, u32)>>>,
-    ) -> PyResult<(
-        HashSet<(String, u32)>,
-        HashMap<Option<Qargs>, HashSet<(String, u32)>>,
-    )> {
-        let mut source_basis: HashSet<(String, u32)> = source_basis.cloned().unwrap_or_default();
-        let mut qargs_local_source_basis: HashMap<Option<Qargs>, HashSet<(String, u32)>> =
-            qargs_local_source_basis.cloned().unwrap_or_default();
-
+        source_basis: &mut HashSet<(String, u32)>,
+        qargs_local_source_basis: &mut HashMap<Option<Qargs>, HashSet<(String, u32)>>,
+    ) -> PyResult<()> {
         for node in dag.op_nodes(true) {
             let Some(NodeType::Operation(node_obj)) = dag.dag().node_weight(node) else {
                 unreachable!("This was supposed to be an op_node.")
@@ -421,14 +415,10 @@ impl BasisTranslator {
             let qargs_is_superset =
                 self.qargs_with_non_global_operation
                     .keys()
+                    .flatten()
                     .any(|incomplete_qargs| {
-                        if let Some(incomplete_qargs) = incomplete_qargs {
-                            let incomplete_qargs =
-                                HashSet::from_iter(incomplete_qargs.iter().copied());
-                            physical_qargs_as_set.is_superset(&incomplete_qargs)
-                        } else {
-                            false
-                        }
+                        let incomplete_qargs = HashSet::from_iter(incomplete_qargs.iter().copied());
+                        physical_qargs_as_set.is_superset(&incomplete_qargs)
                     });
             if self
                 .qargs_with_non_global_operation
@@ -456,20 +446,13 @@ impl BasisTranslator {
                 let bound_inst = op.instruction.bind(py);
                 let blocks = bound_inst.getattr("blocks")?.iter()?;
                 for block in blocks {
-                    let circuit_data_block =
-                        block?.getattr("_data")?.downcast_into::<CircuitData>()?;
                     let block: DAGCircuit =
-                        DAGCircuit::from_circuit_data(py, circuit_data_block.extract()?, true)?;
-                    (source_basis, qargs_local_source_basis) = self.extract_basis_target(
-                        py,
-                        &block,
-                        Some(&source_basis),
-                        Some(&qargs_local_source_basis),
-                    )?;
+                        circuit_to_dag(py, block?.extract()?, true, None, None)?;
+                    self.extract_basis_target(py, &block, source_basis, qargs_local_source_basis)?;
                 }
             }
         }
-        Ok((source_basis, qargs_local_source_basis))
+        Ok(())
     }
     fn apply_translation(
         &mut self,
@@ -499,12 +482,8 @@ impl BasisTranslator {
                     let blocks = bound_obj.getattr("blocks")?;
                     for block in blocks.iter()? {
                         let block = block?;
-                        let circuit_data_block: CircuitData = block
-                            .getattr("_data")?
-                            .downcast_into::<CircuitData>()?
-                            .extract()?;
                         let dag_block: DAGCircuit =
-                            DAGCircuit::from_circuit_data(py, circuit_data_block, true)?;
+                            circuit_to_dag(py, block.extract()?, true, None, None)?;
                         let updated_dag: DAGCircuit;
                         (updated_dag, is_updated) = self.apply_translation(
                             py,
