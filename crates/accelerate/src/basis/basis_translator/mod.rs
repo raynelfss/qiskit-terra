@@ -31,9 +31,8 @@ use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
 use qiskit_circuit::circuit_instruction::OperationFromPython;
 use qiskit_circuit::converters::circuit_to_dag;
-use qiskit_circuit::converters::dag_to_circuit;
+use qiskit_circuit::imports::DAG_TO_CIRCUIT;
 use qiskit_circuit::imports::PARAMETER_EXPRESSION;
-use qiskit_circuit::imports::QUANTUM_CIRCUIT;
 use qiskit_circuit::operations::Param;
 use qiskit_circuit::packed_instruction::PackedInstruction;
 use qiskit_circuit::Clbit;
@@ -507,10 +506,10 @@ impl BasisTranslator {
                             extra_inst_map,
                         )?;
                         let flow_circ_block = if is_updated {
-                            let block: CircuitData = dag_to_circuit(py, &updated_dag, true)?;
-                            QUANTUM_CIRCUIT
+                            DAG_TO_CIRCUIT
                                 .get_bound(py)
-                                .call_method1("_from_circuit_data", (block,))?
+                                .call1((updated_dag,))?
+                                .extract()?
                         } else {
                             block
                         };
@@ -814,25 +813,25 @@ impl BasisTranslator {
                     .map(|clbit| old_cargs[clbit.0 as usize])
                     .collect();
                 let new_op = if inner_node.op.try_standard_gate().is_none() {
-                    let new_node = inner_node.op.py_copy(py)?;
-                    match new_node.view() {
-                        OperationRef::Gate(gate) => {
-                            gate.gate.setattr(py, "condition", inner_node.condition())?
-                        }
-                        OperationRef::Instruction(inst) => {
-                            inst.instruction
-                                .setattr(py, "condition", inner_node.condition())?
-                        }
-                        OperationRef::Operation(oper) => {
-                            oper.operation
-                                .setattr(py, "condition", inner_node.condition())?
-                        }
-                        _ => (),
-                    }
-                    new_node
+                    inner_node.op.py_copy(py)?
                 } else {
                     inner_node.op.clone()
                 };
+                if node.condition().is_some() {
+                    match new_op.view() {
+                        OperationRef::Gate(gate) => {
+                            gate.gate.setattr(py, "condition", node.condition())?
+                        }
+                        OperationRef::Instruction(inst) => {
+                            inst.instruction
+                                .setattr(py, "condition", node.condition())?
+                        }
+                        OperationRef::Operation(oper) => {
+                            oper.operation.setattr(py, "condition", node.condition())?
+                        }
+                        _ => (),
+                    }
+                }
                 let new_params: SmallVec<[Param; 3]> = inner_node
                     .params_view()
                     .iter()
