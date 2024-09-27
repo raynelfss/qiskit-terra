@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 use compose_transforms::BasisTransformIn;
 use compose_transforms::BasisTransformOut;
 use compose_transforms::GateIdentifier;
+use indexmap::IndexMap;
 #[cfg(feature = "cache_pygates")]
 use once_cell::sync::OnceCell;
 
@@ -73,7 +74,7 @@ pub struct BasisTranslator {
 }
 
 type InstMap = HashMap<GateIdentifier, BasisTransformOut>;
-type ExtraInstructionMap<'a> = HashMap<&'a Option<Qargs>, InstMap>;
+type ExtraInstructionMap<'a> = IndexMap<&'a Option<Qargs>, InstMap>;
 
 #[pymethods]
 impl BasisTranslator {
@@ -425,7 +426,7 @@ impl BasisTranslator {
                 BTreeSet::from_iter(physical_qargs.iter().copied());
             if self
                 .qargs_with_non_global_operation
-                .contains_key(&Some(physical_qargs.iter().copied().collect()))
+                .contains_key(&Some(physical_qargs))
                 || self
                     .qargs_with_non_global_operation
                     .keys()
@@ -437,7 +438,7 @@ impl BasisTranslator {
                     })
             {
                 qargs_local_source_basis
-                    .entry(Some(physical_qargs_as_set.iter().copied().collect()))
+                    .entry(Some(physical_qargs_as_set.into_iter().collect()))
                     .and_modify(|set| {
                         set.insert((node_obj.op.name().to_string(), node_obj.op.num_qubits()));
                     })
@@ -505,7 +506,7 @@ impl BasisTranslator {
                 BTreeSet::from_iter(physical_qargs.iter().copied());
             if self
                 .qargs_with_non_global_operation
-                .contains_key(&Some(physical_qargs.iter().copied().collect()))
+                .contains_key(&Some(physical_qargs))
                 || self
                     .qargs_with_non_global_operation
                     .keys()
@@ -517,7 +518,7 @@ impl BasisTranslator {
                     })
             {
                 qargs_local_source_basis
-                    .entry(Some(physical_qargs_as_set.iter().copied().collect()))
+                    .entry(Some(physical_qargs_as_set.into_iter().collect()))
                     .and_modify(|set| {
                         set.insert((node_obj.op.name().to_string(), node_obj.op.num_qubits()));
                     })
@@ -793,8 +794,8 @@ impl BasisTranslator {
                     #[cfg(feature = "cache_pygates")]
                     None,
                 )?;
-                dag.add_global_phase(py, target_dag.global_phase())?;
             }
+            dag.add_global_phase(py, target_dag.global_phase())?;
         } else {
             let parameter_map = target_params
                 .iter()
@@ -816,17 +817,16 @@ impl BasisTranslator {
                     .iter()
                     .map(|clbit| old_cargs[clbit.0 as usize])
                     .collect();
-
-                let mut new_params: SmallVec<[Param; 3]> = inner_node
-                    .params_view()
-                    .iter()
-                    .map(|param| param.clone_ref(py))
-                    .collect();
                 let new_op = if inner_node.op.try_standard_gate().is_none() {
                     inner_node.op.py_copy(py)?
                 } else {
                     inner_node.op.clone()
                 };
+                let mut new_params: SmallVec<[Param; 3]> = inner_node
+                    .params_view()
+                    .iter()
+                    .map(|param| param.clone_ref(py))
+                    .collect();
                 if inner_node
                     .params_view()
                     .iter()

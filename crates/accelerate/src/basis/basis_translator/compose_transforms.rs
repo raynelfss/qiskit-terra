@@ -46,12 +46,12 @@ pub(super) fn compose_transforms<'a>(
     source_basis: &'a HashSet<GateIdentifier>,
     source_dag: &'a DAGCircuit,
 ) -> PyResult<HashMap<GateIdentifier, BasisTransformOut>> {
-    let mut example_gates: HashMap<GateIdentifier, usize> = HashMap::default();
-    get_gates_num_params(source_dag, &mut example_gates)?;
+    let mut gate_param_counts: HashMap<GateIdentifier, usize> = HashMap::default();
+    get_gates_num_params(source_dag, &mut gate_param_counts)?;
     let mut mapped_instructions: HashMap<GateIdentifier, BasisTransformOut> = HashMap::new();
 
     for (gate_name, gate_num_qubits) in source_basis.iter().cloned() {
-        let num_params = example_gates[&(gate_name.clone(), gate_num_qubits)];
+        let num_params = gate_param_counts[&(gate_name.clone(), gate_num_qubits)];
 
         let placeholder_params: SmallVec<[Param; 3]> = PARAMETER_VECTOR
             .get_bound(py)
