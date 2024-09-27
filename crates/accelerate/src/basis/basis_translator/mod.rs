@@ -10,7 +10,10 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
+use std::collections::BTreeSet;
+
 use compose_transforms::BasisTransformIn;
+use compose_transforms::BasisTransformOut;
 use compose_transforms::GateIdentifier;
 #[cfg(feature = "cache_pygates")]
 use once_cell::sync::OnceCell;
@@ -29,6 +32,7 @@ use pyo3::types::IntoPyDict;
 use pyo3::types::PyComplex;
 use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
+use pyo3::PyTypeInfo;
 use qiskit_circuit::circuit_instruction::OperationFromPython;
 use qiskit_circuit::converters::circuit_to_dag;
 use qiskit_circuit::imports::DAG_TO_CIRCUIT;
@@ -57,7 +61,7 @@ pub struct BasisTranslator {
     #[pyo3(get)]
     equiv_lib: EquivalenceLibrary,
     #[pyo3(get)]
-    target_basis: HashSet<String>,
+    target_basis: Option<HashSet<String>>,
     #[pyo3(get)]
     target: Option<Target>,
     #[pyo3(get)]
@@ -68,7 +72,7 @@ pub struct BasisTranslator {
     min_qubits: usize,
 }
 
-type InstMap = HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)>;
+type InstMap = HashMap<GateIdentifier, BasisTransformOut>;
 type ExtraInstructionMap<'a> = HashMap<&'a Option<Qargs>, InstMap>;
 
 #[pymethods]
@@ -76,8 +80,8 @@ impl BasisTranslator {
     #[new]
     fn new(
         equiv_lib: EquivalenceLibrary,
-        target_basis: HashSet<String>,
         min_qubits: usize,
+        target_basis: Option<HashSet<String>>,
         mut target: Option<Target>,
     ) -> Self {
         let mut non_global_operations = None;
@@ -114,7 +118,7 @@ impl BasisTranslator {
     }
 
     fn pre_compose(&mut self, py: Python<'_>, dag: DAGCircuit) -> PyResult<DAGCircuit> {
-        if self.target_basis.is_empty() && self.target.is_none() {
+        if self.target_basis.is_none() && self.target.is_none() {
             return Ok(dag);
         }
 
@@ -146,8 +150,7 @@ impl BasisTranslator {
                 .map(|x| x.to_string())
                 .collect();
             source_basis = self.extract_basis(py, &dag)?;
-            qargs_local_source_basis = HashMap::default();
-            target_basis = self.target_basis.clone();
+            target_basis = self.target_basis.clone().unwrap();
         }
         target_basis = target_basis
             .union(&basic_instrs)
@@ -176,27 +179,23 @@ impl BasisTranslator {
             // search. This matches with the check we did above to include those
             // subset non-local operations in the check here.
             let mut expanded_target = target_basis.clone();
-            if let Some(qarg_existent) = qarg {
-                let qarg_as_set: HashSet<PhysicalQubit> =
-                    HashSet::from_iter(qarg_existent.iter().copied());
-                if qarg_existent.len() > 1 {
-                    for (non_local_qarg, local_basis) in self.qargs_with_non_global_operation.iter()
-                    {
-                        if let Some(non_local_qarg) = non_local_qarg {
-                            let non_local_qarg_as_set =
-                                HashSet::from_iter(non_local_qarg.iter().copied());
-                            if qarg_as_set.is_superset(&non_local_qarg_as_set) {
-                                expanded_target =
-                                    expanded_target.union(local_basis).cloned().collect();
-                            }
+            if qarg.as_ref().is_some_and(|qarg| qarg.len() > 1) {
+                let qarg_as_set: BTreeSet<PhysicalQubit> =
+                    BTreeSet::from_iter(qarg.as_ref().unwrap().iter().copied());
+                for (non_local_qarg, local_basis) in self.qargs_with_non_global_operation.iter() {
+                    if let Some(non_local_qarg) = non_local_qarg {
+                        let non_local_qarg_as_set =
+                            BTreeSet::from_iter(non_local_qarg.iter().copied());
+                        if qarg_as_set.is_superset(&non_local_qarg_as_set) {
+                            expanded_target = expanded_target.union(local_basis).cloned().collect();
                         }
                     }
-                } else {
-                    expanded_target = expanded_target
-                        .union(&self.qargs_with_non_global_operation[qarg])
-                        .cloned()
-                        .collect();
                 }
+            } else {
+                expanded_target = expanded_target
+                    .union(&self.qargs_with_non_global_operation[qarg])
+                    .cloned()
+                    .collect();
             }
             let local_basis_transforms = basis_search(
                 &mut self.equiv_lib,
@@ -237,8 +236,7 @@ impl BasisTranslator {
             )));
         };
 
-        let instr_map: HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)> =
-            compose_transforms(py, &basis_transforms, &source_basis, &dag)?;
+        let instr_map: InstMap = compose_transforms(py, &basis_transforms, &source_basis, &dag)?;
         let extra_inst_map: ExtraInstructionMap = qarg_local_basis_transforms
             .iter()
             .map(|(qarg, transform)| -> PyResult<_> {
@@ -322,8 +320,8 @@ impl BasisTranslator {
         let py = slf.py();
         Ok((
             slf.equiv_lib.clone(),
-            slf.target_basis.clone(),
             slf.min_qubits,
+            slf.target_basis.clone(),
             slf.target.clone(),
         )
             .into_py(py))
@@ -401,8 +399,8 @@ impl BasisTranslator {
         &self,
         py: Python,
         dag: &DAGCircuit,
-        source_basis: &mut HashSet<(String, u32)>,
-        qargs_local_source_basis: &mut HashMap<Option<Qargs>, HashSet<(String, u32)>>,
+        source_basis: &mut HashSet<GateIdentifier>,
+        qargs_local_source_basis: &mut HashMap<Option<Qargs>, HashSet<GateIdentifier>>,
     ) -> PyResult<()> {
         for node in dag.op_nodes(true) {
             let Some(NodeType::Operation(node_obj)) = dag.dag().node_weight(node) else {
@@ -423,20 +421,20 @@ impl BasisTranslator {
             // and 1q operations in the same manner)
             let physical_qargs: SmallVec<[PhysicalQubit; 2]> =
                 qargs.iter().map(|x| PhysicalQubit(x.0)).collect();
-            let physical_qargs_as_set: HashSet<PhysicalQubit> =
-                HashSet::from_iter(physical_qargs.iter().copied());
-            let qargs_is_superset =
-                self.qargs_with_non_global_operation
-                    .keys()
-                    .flatten()
-                    .any(|incomplete_qargs| {
-                        let incomplete_qargs = HashSet::from_iter(incomplete_qargs.iter().copied());
-                        physical_qargs_as_set.is_superset(&incomplete_qargs)
-                    });
+            let physical_qargs_as_set: BTreeSet<PhysicalQubit> =
+                BTreeSet::from_iter(physical_qargs.iter().copied());
             if self
                 .qargs_with_non_global_operation
                 .contains_key(&Some(physical_qargs.iter().copied().collect()))
-                || qargs_is_superset
+                || self
+                    .qargs_with_non_global_operation
+                    .keys()
+                    .flatten()
+                    .any(|incomplete_qargs| {
+                        let incomplete_qargs =
+                            BTreeSet::from_iter(incomplete_qargs.iter().copied());
+                        physical_qargs_as_set.is_superset(&incomplete_qargs)
+                    })
             {
                 qargs_local_source_basis
                     .entry(Some(physical_qargs_as_set.iter().copied().collect()))
@@ -459,14 +457,97 @@ impl BasisTranslator {
                 let bound_inst = op.instruction.bind(py);
                 let blocks = bound_inst.getattr("blocks")?.iter()?;
                 for block in blocks {
-                    let block: DAGCircuit =
-                        circuit_to_dag(py, block?.extract()?, true, None, None)?;
-                    self.extract_basis_target(py, &block, source_basis, qargs_local_source_basis)?;
+                    self.extract_basis_target_circ(
+                        &block?,
+                        source_basis,
+                        qargs_local_source_basis,
+                    )?;
                 }
             }
         }
         Ok(())
     }
+
+    /// Variant of extract_basis_target that takes an instance of QuantumCircuit.
+    /// This needs to use a Python instance of `QuantumCircuit` due to it needing
+    /// to access `has_calibration_for()` which is unavailable through rust. However,
+    /// this API will be removed with the deprecation of `Pulse`.
+    fn extract_basis_target_circ(
+        &self,
+        circuit: &Bound<PyAny>,
+        source_basis: &mut HashSet<GateIdentifier>,
+        qargs_local_source_basis: &mut HashMap<Option<Qargs>, HashSet<GateIdentifier>>,
+    ) -> PyResult<()> {
+        let py = circuit.py();
+        let circ_data_bound = circuit.getattr("_data")?.downcast_into::<CircuitData>()?;
+        let circ_data = circ_data_bound.borrow();
+        for (index, node_obj) in circ_data.iter().enumerate() {
+            let qargs = circ_data.get_qargs(node_obj.qubits);
+            if circuit
+                .call_method1("has_calibration_for", (circuit.get_item(index)?,))?
+                .is_truthy()?
+                || qargs.len() < self.min_qubits
+            {
+                continue;
+            }
+            // Treat the instruction as on an incomplete basis if the qargs are in the
+            // qargs_with_non_global_operation dictionary or if any of the qubits in qargs
+            // are a superset for a non-local operation. For example, if the qargs
+            // are (0, 1) and that's a global (ie no non-local operations on (0, 1)
+            // operation but there is a non-local operation on (1,) we need to
+            // do an extra non-local search for this op to ensure we include any
+            // single qubit operation for (1,) as valid. This pattern also holds
+            // true for > 2q ops too (so for 4q operations we need to check for 3q, 2q,
+            // and 1q operations in the same manner)
+            let physical_qargs: SmallVec<[PhysicalQubit; 2]> =
+                qargs.iter().map(|x| PhysicalQubit(x.0)).collect();
+            let physical_qargs_as_set: BTreeSet<PhysicalQubit> =
+                BTreeSet::from_iter(physical_qargs.iter().copied());
+            if self
+                .qargs_with_non_global_operation
+                .contains_key(&Some(physical_qargs.iter().copied().collect()))
+                || self
+                    .qargs_with_non_global_operation
+                    .keys()
+                    .flatten()
+                    .any(|incomplete_qargs| {
+                        let incomplete_qargs =
+                            BTreeSet::from_iter(incomplete_qargs.iter().copied());
+                        physical_qargs_as_set.is_superset(&incomplete_qargs)
+                    })
+            {
+                qargs_local_source_basis
+                    .entry(Some(physical_qargs_as_set.iter().copied().collect()))
+                    .and_modify(|set| {
+                        set.insert((node_obj.op.name().to_string(), node_obj.op.num_qubits()));
+                    })
+                    .or_insert(HashSet::from_iter([(
+                        node_obj.op.name().to_string(),
+                        node_obj.op.num_qubits(),
+                    )]));
+            } else {
+                source_basis.insert((node_obj.op.name().to_string(), node_obj.op.num_qubits()));
+            }
+            if node_obj.op.control_flow() {
+                let OperationRef::Instruction(op) = node_obj.op.view() else {
+                    unreachable!(
+                        "Control flow op is not a control flow op. But control_flow is `true`"
+                    )
+                };
+                let bound_inst = op.instruction.bind(py);
+                let blocks = bound_inst.getattr("blocks")?.iter()?;
+                for block in blocks {
+                    self.extract_basis_target_circ(
+                        &block?,
+                        source_basis,
+                        qargs_local_source_basis,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn apply_translation(
         &mut self,
         py: Python,
@@ -483,7 +564,7 @@ impl BasisTranslator {
             };
             let node_qarg = dag.get_qargs(node_obj.qubits);
             let node_carg = dag.get_cargs(node_obj.clbits);
-            let qubit_set: HashSet<Qubit> = HashSet::from_iter(node_qarg.iter().copied());
+            let qubit_set: BTreeSet<Qubit> = BTreeSet::from_iter(node_qarg.iter().copied());
             let mut new_op: Option<OperationFromPython> = None;
             if target_basis.contains(node_obj.op.name()) || node_qarg.len() < self.min_qubits {
                 if node_obj.op.control_flow() {
@@ -655,7 +736,66 @@ impl BasisTranslator {
                 &target_dag
             )));
         }
-        if !node.params_view().is_empty() {
+        if node.params_view().is_empty() {
+            for inner_index in target_dag.topological_op_nodes()? {
+                let NodeType::Operation(inner_node) = &target_dag.dag()[inner_index] else {
+                    unreachable!("Node returned by topological_op_nodes was not an Operation node.")
+                };
+                let old_qargs = dag.get_qargs(node.qubits);
+                let old_cargs = dag.get_cargs(node.clbits);
+                let new_qubits: Vec<Qubit> = target_dag
+                    .get_qargs(inner_node.qubits)
+                    .iter()
+                    .map(|qubit| old_qargs[qubit.0 as usize])
+                    .collect();
+                let new_clbits: Vec<Clbit> = target_dag
+                    .get_cargs(inner_node.clbits)
+                    .iter()
+                    .map(|clbit| old_cargs[clbit.0 as usize])
+                    .collect();
+                let new_op = if inner_node.op.try_standard_gate().is_none() {
+                    inner_node.op.py_copy(py)?
+                } else {
+                    inner_node.op.clone()
+                };
+                if node.condition().is_some() {
+                    match new_op.view() {
+                        OperationRef::Gate(gate) => {
+                            gate.gate.setattr(py, "condition", node.condition())?
+                        }
+                        OperationRef::Instruction(inst) => {
+                            inst.instruction
+                                .setattr(py, "condition", node.condition())?
+                        }
+                        OperationRef::Operation(oper) => {
+                            oper.operation.setattr(py, "condition", node.condition())?
+                        }
+                        _ => (),
+                    }
+                }
+                let new_params: SmallVec<[Param; 3]> = inner_node
+                    .params_view()
+                    .iter()
+                    .map(|param| param.clone_ref(py))
+                    .collect();
+                let new_extra_props = node.extra_attrs.clone();
+                dag.apply_operation_back(
+                    py,
+                    new_op,
+                    &new_qubits,
+                    &new_clbits,
+                    if new_params.is_empty() {
+                        None
+                    } else {
+                        Some(new_params)
+                    },
+                    new_extra_props,
+                    #[cfg(feature = "cache_pygates")]
+                    None,
+                )?;
+                dag.add_global_phase(py, target_dag.global_phase())?;
+            }
+        } else {
             let parameter_map = target_params
                 .iter()
                 .zip(node.params_view())
@@ -724,7 +864,7 @@ impl BasisTranslator {
                             if eval.is_empty()? {
                                 new_value = new_value.call_method0(intern!(py, "numeric"))?;
                             }
-                            new_params.push(Param::extract_no_coerce(&new_value)?);
+                            new_params.push(new_value.extract()?);
                         } else {
                             new_params.push(param.clone_ref(py));
                         }
@@ -765,7 +905,7 @@ impl BasisTranslator {
             if let Param::ParameterExpression(old_phase) = target_dag.global_phase() {
                 let bound_old_phase = old_phase.bind(py);
                 let bind_dict = PyDict::new_bound(py);
-                for key in bound_old_phase.getattr(intern!(py, "parameters"))?.iter()? {
+                for key in target_dag.global_phase().iter_parameters(py)? {
                     let key = key?;
                     bind_dict.set_item(&key, parameter_map.get_item(&key)?)?;
                 }
@@ -785,7 +925,7 @@ impl BasisTranslator {
                 }
                 if !new_phase.getattr(intern!(py, "parameters"))?.is_truthy()? {
                     new_phase = new_phase.call_method0(intern!(py, "numeric"))?;
-                    if new_phase.downcast::<PyComplex>().is_ok() {
+                    if new_phase.is_instance(&PyComplex::type_object_bound(py))? {
                         return Err(TranspilerError::new_err(format!(
                             "Global phase must be real, but got {}",
                             new_phase.repr()?
@@ -794,65 +934,6 @@ impl BasisTranslator {
                 }
                 let new_phase: Param = new_phase.extract()?;
                 dag.add_global_phase(py, &new_phase)?;
-            }
-        } else {
-            for inner_index in target_dag.topological_op_nodes()? {
-                let NodeType::Operation(inner_node) = &target_dag.dag()[inner_index] else {
-                    unreachable!("Node returned by topological_op_nodes was not an Operation node.")
-                };
-                let old_qargs = dag.get_qargs(node.qubits);
-                let old_cargs = dag.get_cargs(node.clbits);
-                let new_qubits: Vec<Qubit> = target_dag
-                    .get_qargs(inner_node.qubits)
-                    .iter()
-                    .map(|qubit| old_qargs[qubit.0 as usize])
-                    .collect();
-                let new_clbits: Vec<Clbit> = target_dag
-                    .get_cargs(inner_node.clbits)
-                    .iter()
-                    .map(|clbit| old_cargs[clbit.0 as usize])
-                    .collect();
-                let new_op = if inner_node.op.try_standard_gate().is_none() {
-                    inner_node.op.py_copy(py)?
-                } else {
-                    inner_node.op.clone()
-                };
-                if node.condition().is_some() {
-                    match new_op.view() {
-                        OperationRef::Gate(gate) => {
-                            gate.gate.setattr(py, "condition", node.condition())?
-                        }
-                        OperationRef::Instruction(inst) => {
-                            inst.instruction
-                                .setattr(py, "condition", node.condition())?
-                        }
-                        OperationRef::Operation(oper) => {
-                            oper.operation.setattr(py, "condition", node.condition())?
-                        }
-                        _ => (),
-                    }
-                }
-                let new_params: SmallVec<[Param; 3]> = inner_node
-                    .params_view()
-                    .iter()
-                    .map(|param| param.clone_ref(py))
-                    .collect();
-                let new_extra_props = node.extra_attrs.clone();
-                dag.apply_operation_back(
-                    py,
-                    new_op,
-                    &new_qubits,
-                    &new_clbits,
-                    if new_params.is_empty() {
-                        None
-                    } else {
-                        Some(new_params)
-                    },
-                    new_extra_props,
-                    #[cfg(feature = "cache_pygates")]
-                    None,
-                )?;
-                dag.add_global_phase(py, target_dag.global_phase())?;
             }
         }
 

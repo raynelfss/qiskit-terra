@@ -119,8 +119,8 @@ class BasisTranslator(TransformationPass):
         super().__init__()
         self._core = CoreBasisTranslator(
             equivalence_library,
-            set() if target_basis is None else set(target_basis),
             min_qubits,
+            None if target_basis is None else set(target_basis),
             target,
         )
 
