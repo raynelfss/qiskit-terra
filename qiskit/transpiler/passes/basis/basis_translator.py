@@ -138,4 +138,4 @@ class BasisTranslator(TransformationPass):
             DAGCircuit: translated circuit.
         """
 
-        return self._core.pre_compose(dag)
+        return self._core.run(dag)

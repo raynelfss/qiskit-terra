@@ -13,7 +13,6 @@
 use std::cell::RefCell;
 
 use hashbrown::{HashMap, HashSet};
-use pyo3::prelude::*;
 
 use crate::equivalence::{EdgeData, Equivalence, EquivalenceLibrary, Key, NodeData};
 use qiskit_circuit::operations::Operation;
@@ -22,36 +21,6 @@ use rustworkx_core::petgraph::visit::Control;
 use rustworkx_core::traversal::{dijkstra_search, DijkstraEvent};
 
 use super::compose_transforms::{BasisTransformIn, GateIdentifier};
-
-#[pyfunction]
-#[pyo3(name = "basis_search")]
-/// Search for a set of transformations from source_basis to target_basis.
-/// Args:
-///     equiv_lib (EquivalenceLibrary): Source of valid translations
-///     source_basis (Set[Tuple[gate_name: str, gate_num_qubits: int]]): Starting basis.
-///     target_basis (Set[gate_name: str]): Target basis.
-///
-/// Returns:
-///     Optional[List[Tuple[gate, equiv_params, equiv_circuit]]]: List of (gate,
-///         equiv_params, equiv_circuit) tuples tuples which, if applied in order
-///         will map from source_basis to target_basis. Returns None if no path
-///         was found.
-pub(crate) fn py_basis_search(
-    py: Python,
-    equiv_lib: &mut EquivalenceLibrary,
-    source_basis: HashSet<(String, u32)>,
-    target_basis: HashSet<String>,
-) -> PyObject {
-    basis_search(
-        equiv_lib,
-        source_basis
-            .iter()
-            .map(|(name, num_qubits)| (name.as_str(), *num_qubits))
-            .collect(),
-        target_basis.iter().map(|name| name.as_str()).collect(),
-    )
-    .into_py(py)
-}
 
 pub(crate) type BasisTransforms = Vec<(GateIdentifier, BasisTransformIn)>;
 /// Search for a set of transformations from source_basis to target_basis.
@@ -64,8 +33,8 @@ pub(crate) type BasisTransforms = Vec<(GateIdentifier, BasisTransformIn)>;
 /// basis` are reached.
 pub(crate) fn basis_search(
     equiv_lib: &mut EquivalenceLibrary,
-    source_basis: HashSet<(&str, u32)>,
-    target_basis: HashSet<&str>,
+    source_basis: &HashSet<GateIdentifier>,
+    target_basis: &HashSet<String>,
 ) -> Option<BasisTransforms> {
     // Build the visitor attributes:
     let mut num_gates_remaining_for_rule: HashMap<usize, usize> = HashMap::default();

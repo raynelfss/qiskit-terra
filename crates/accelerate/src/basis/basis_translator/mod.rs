@@ -10,12 +10,9 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
-use std::collections::BTreeSet;
-
 use compose_transforms::BasisTransformIn;
 use compose_transforms::BasisTransformOut;
 use compose_transforms::GateIdentifier;
-use indexmap::IndexMap;
 #[cfg(feature = "cache_pygates")]
 use once_cell::sync::OnceCell;
 
@@ -29,10 +26,7 @@ use pyo3::prelude::*;
 pub mod basis_search;
 pub mod compose_transforms;
 
-use pyo3::types::IntoPyDict;
-use pyo3::types::PyComplex;
-use pyo3::types::PyDict;
-use pyo3::types::PyTuple;
+use pyo3::types::{IntoPyDict, PyComplex, PyDict, PyTuple};
 use pyo3::PyTypeInfo;
 use qiskit_circuit::circuit_instruction::OperationFromPython;
 use qiskit_circuit::converters::circuit_to_dag;
@@ -40,13 +34,12 @@ use qiskit_circuit::imports::DAG_TO_CIRCUIT;
 use qiskit_circuit::imports::PARAMETER_EXPRESSION;
 use qiskit_circuit::operations::Param;
 use qiskit_circuit::packed_instruction::PackedInstruction;
-use qiskit_circuit::Clbit;
-use qiskit_circuit::Qubit;
 use qiskit_circuit::{
     circuit_data::CircuitData,
     dag_circuit::{DAGCircuit, NodeType},
     operations::{Operation, OperationRef},
 };
+use qiskit_circuit::{Clbit, Qubit};
 use smallvec::SmallVec;
 
 use crate::equivalence::EquivalenceLibrary;
@@ -59,22 +52,16 @@ use crate::target_transpiler::{Qargs, Target};
     module = "qiskit._accelerate.basis.basis_translator"
 )]
 pub struct BasisTranslator {
-    #[pyo3(get)]
     equiv_lib: EquivalenceLibrary,
-    #[pyo3(get)]
     target_basis: Option<HashSet<String>>,
-    #[pyo3(get)]
     target: Option<Target>,
-    #[pyo3(get)]
     non_global_operations: Option<HashSet<String>>,
-    #[pyo3(get)]
     qargs_with_non_global_operation: HashMap<Option<Qargs>, HashSet<String>>,
-    #[pyo3(get)]
     min_qubits: usize,
 }
 
 type InstMap = HashMap<GateIdentifier, BasisTransformOut>;
-type ExtraInstructionMap<'a> = IndexMap<&'a Option<Qargs>, InstMap>;
+type ExtraInstructionMap<'a> = HashMap<&'a Option<Qargs>, InstMap>;
 
 #[pymethods]
 impl BasisTranslator {
@@ -118,15 +105,15 @@ impl BasisTranslator {
         }
     }
 
-    fn pre_compose(&mut self, py: Python<'_>, dag: DAGCircuit) -> PyResult<DAGCircuit> {
+    fn run(&mut self, py: Python<'_>, dag: DAGCircuit) -> PyResult<DAGCircuit> {
         if self.target_basis.is_none() && self.target.is_none() {
             return Ok(dag);
         }
 
         let basic_instrs: HashSet<String>;
-        let mut source_basis: HashSet<(String, u32)> = HashSet::default();
+        let mut source_basis: HashSet<GateIdentifier> = HashSet::default();
         let mut target_basis: HashSet<String>;
-        let mut qargs_local_source_basis: HashMap<Option<Qargs>, HashSet<(String, u32)>> =
+        let mut qargs_local_source_basis: HashMap<Option<Qargs>, HashSet<GateIdentifier>> =
             HashMap::default();
         if let Some(target) = self.target.as_ref() {
             basic_instrs = ["barrier", "snapshot", "store"]
@@ -165,11 +152,7 @@ impl BasisTranslator {
         if source_basis_names.is_subset(&target_basis) && qargs_local_source_basis.is_empty() {
             return Ok(dag);
         }
-        let basis_transforms = basis_search(
-            &mut self.equiv_lib,
-            HashSet::from_iter(source_basis.iter().map(|(x, y)| (x.as_str(), *y))),
-            HashSet::from_iter(target_basis.iter().map(|x| x.as_str())),
-        );
+        let basis_transforms = basis_search(&mut self.equiv_lib, &source_basis, &target_basis);
         let mut qarg_local_basis_transforms: HashMap<
             Option<Qargs>,
             Vec<(GateIdentifier, BasisTransformIn)>,
@@ -181,12 +164,12 @@ impl BasisTranslator {
             // subset non-local operations in the check here.
             let mut expanded_target = target_basis.clone();
             if qarg.as_ref().is_some_and(|qarg| qarg.len() > 1) {
-                let qarg_as_set: BTreeSet<PhysicalQubit> =
-                    BTreeSet::from_iter(qarg.as_ref().unwrap().iter().copied());
+                let qarg_as_set: HashSet<PhysicalQubit> =
+                    HashSet::from_iter(qarg.as_ref().unwrap().iter().copied());
                 for (non_local_qarg, local_basis) in self.qargs_with_non_global_operation.iter() {
                     if let Some(non_local_qarg) = non_local_qarg {
                         let non_local_qarg_as_set =
-                            BTreeSet::from_iter(non_local_qarg.iter().copied());
+                            HashSet::from_iter(non_local_qarg.iter().copied());
                         if qarg_as_set.is_superset(&non_local_qarg_as_set) {
                             expanded_target = expanded_target.union(local_basis).cloned().collect();
                         }
@@ -198,11 +181,8 @@ impl BasisTranslator {
                     .cloned()
                     .collect();
             }
-            let local_basis_transforms = basis_search(
-                &mut self.equiv_lib,
-                HashSet::from_iter(local_source_basis.iter().map(|(x, y)| (x.as_str(), *y))),
-                HashSet::from_iter(expanded_target.iter().map(|x| x.as_str())),
-            );
+            let local_basis_transforms =
+                basis_search(&mut self.equiv_lib, local_source_basis, &expanded_target);
             if let Some(local_basis_transforms) = local_basis_transforms {
                 qarg_local_basis_transforms.insert(qarg.clone(), local_basis_transforms);
             } else {
@@ -255,14 +235,6 @@ impl BasisTranslator {
 
     fn __getstate__(slf: PyRef<Self>) -> PyResult<Bound<PyDict>> {
         let state = PyDict::new_bound(slf.py());
-        /*
-           equiv_lib,
-           target_basis,
-           target,
-           non_global_operations,
-           qargs_with_non_global_operation,
-           min_qubits,
-        */
         state.set_item(
             intern!(slf.py(), "equiv_lib"),
             slf.equiv_lib.clone().into_py(slf.py()),
@@ -330,13 +302,14 @@ impl BasisTranslator {
 }
 
 impl BasisTranslator {
-    fn extract_basis(&self, py: Python, circuit: &DAGCircuit) -> PyResult<HashSet<(String, u32)>> {
+    /// Method that extracts all non-calibrated gate instances identifiers from a DAGCircuit.
+    fn extract_basis(&self, py: Python, circuit: &DAGCircuit) -> PyResult<HashSet<GateIdentifier>> {
         let mut basis = HashSet::default();
         // Recurse for DAGCircuit
         fn recurse_dag(
             py: Python,
             circuit: &DAGCircuit,
-            basis: &mut HashSet<(String, u32)>,
+            basis: &mut HashSet<GateIdentifier>,
             min_qubits: usize,
         ) -> PyResult<()> {
             for node in circuit.op_nodes(true) {
@@ -365,7 +338,7 @@ impl BasisTranslator {
         fn recurse_circuit(
             py: Python,
             circuit: Bound<PyAny>,
-            basis: &mut HashSet<(String, u32)>,
+            basis: &mut HashSet<GateIdentifier>,
             min_qubits: usize,
         ) -> PyResult<()> {
             let circuit_data: PyRef<CircuitData> = circuit
@@ -396,6 +369,10 @@ impl BasisTranslator {
         Ok(basis)
     }
 
+    /// Method that extracts a mapping of all the qargs in the local_source basis
+    /// obtained from the [Target], to all non-calibrated gate instances identifiers from a DAGCircuit.
+    /// When dealing with `ControlFlowOp` instances the function will perform a recursion call
+    /// to a variant design to handle instances of `QuantumCircuit`.
     fn extract_basis_target(
         &self,
         py: Python,
@@ -422,8 +399,8 @@ impl BasisTranslator {
             // and 1q operations in the same manner)
             let physical_qargs: SmallVec<[PhysicalQubit; 2]> =
                 qargs.iter().map(|x| PhysicalQubit(x.0)).collect();
-            let physical_qargs_as_set: BTreeSet<PhysicalQubit> =
-                BTreeSet::from_iter(physical_qargs.iter().copied());
+            let physical_qargs_as_set: HashSet<PhysicalQubit> =
+                HashSet::from_iter(physical_qargs.iter().copied());
             if self
                 .qargs_with_non_global_operation
                 .contains_key(&Some(physical_qargs))
@@ -432,8 +409,7 @@ impl BasisTranslator {
                     .keys()
                     .flatten()
                     .any(|incomplete_qargs| {
-                        let incomplete_qargs =
-                            BTreeSet::from_iter(incomplete_qargs.iter().copied());
+                        let incomplete_qargs = HashSet::from_iter(incomplete_qargs.iter().copied());
                         physical_qargs_as_set.is_superset(&incomplete_qargs)
                     })
             {
@@ -456,6 +432,8 @@ impl BasisTranslator {
                     )
                 };
                 let bound_inst = op.instruction.bind(py);
+                // Use python side extraction instead of the Rust method `op.blocks` due to
+                // required usage of a python-space method `QuantumCircuit.has_calibration_for`.
                 let blocks = bound_inst.getattr("blocks")?.iter()?;
                 for block in blocks {
                     self.extract_basis_target_circ(
@@ -502,8 +480,8 @@ impl BasisTranslator {
             // and 1q operations in the same manner)
             let physical_qargs: SmallVec<[PhysicalQubit; 2]> =
                 qargs.iter().map(|x| PhysicalQubit(x.0)).collect();
-            let physical_qargs_as_set: BTreeSet<PhysicalQubit> =
-                BTreeSet::from_iter(physical_qargs.iter().copied());
+            let physical_qargs_as_set: HashSet<PhysicalQubit> =
+                HashSet::from_iter(physical_qargs.iter().copied());
             if self
                 .qargs_with_non_global_operation
                 .contains_key(&Some(physical_qargs))
@@ -512,8 +490,7 @@ impl BasisTranslator {
                     .keys()
                     .flatten()
                     .any(|incomplete_qargs| {
-                        let incomplete_qargs =
-                            BTreeSet::from_iter(incomplete_qargs.iter().copied());
+                        let incomplete_qargs = HashSet::from_iter(incomplete_qargs.iter().copied());
                         physical_qargs_as_set.is_superset(&incomplete_qargs)
                     })
             {
@@ -565,7 +542,7 @@ impl BasisTranslator {
             };
             let node_qarg = dag.get_qargs(node_obj.qubits);
             let node_carg = dag.get_cargs(node_obj.clbits);
-            let qubit_set: BTreeSet<Qubit> = BTreeSet::from_iter(node_qarg.iter().copied());
+            let qubit_set: HashSet<Qubit> = HashSet::from_iter(node_qarg.iter().copied());
             let mut new_op: Option<OperationFromPython> = None;
             if target_basis.contains(node_obj.op.name()) || node_qarg.len() < self.min_qubits {
                 if node_obj.op.control_flow() {
@@ -723,7 +700,7 @@ impl BasisTranslator {
         py: Python,
         dag: &mut DAGCircuit,
         node: PackedInstruction,
-        instr_map: &HashMap<(String, u32), (SmallVec<[Param; 3]>, DAGCircuit)>,
+        instr_map: &HashMap<GateIdentifier, (SmallVec<[Param; 3]>, DAGCircuit)>,
     ) -> PyResult<()> {
         let (target_params, target_dag) =
             &instr_map[&(node.op.name().to_string(), node.op.num_qubits())];
