@@ -628,3 +628,17 @@ impl PackedInstruction {
         }
     }
 }
+
+/// This represents a pre-internalized PackedInstruction that serves to add instances
+/// directly from rust into any representation of a circuit such as [DAGCircuit] or
+/// [CircuitData].
+#[derive(Debug, Clone)]
+pub struct AbstractPackedInstruction {
+    pub op: PackedOperation,
+    pub qubits: SmallVec<[Qubit; 2]>,
+    pub clbits: SmallVec<[Clbit; 2]>,
+    pub params: SmallVec<[Param; 3]>,
+    pub extra_attrs: ExtraInstructionAttributes,
+    #[cfg(feature = "cache_pygates")]
+    pub py_op: Option<PyObject>,
+}
