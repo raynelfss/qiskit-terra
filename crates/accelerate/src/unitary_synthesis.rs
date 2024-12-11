@@ -148,6 +148,8 @@ fn apply_synth_sequence(
             out_dag.cargs_interner.get_default(),
             new_params,
             ExtraInstructionAttributes::default(),
+            #[cfg(feature = "cache_pygates")]
+            OnceLock::new(),
         );
         instructions.push(instruction);
     }
@@ -283,6 +285,8 @@ fn py_run_main_loop(
                 packed_instr.clbits(),
                 (!new_node_op.params.is_empty()).then_some(new_node_op.params),
                 new_node_op.extra_attrs,
+                #[cfg(feature = "cache_pygates")]
+                new_node.unbind().into(),
             );
         }
         if !(packed_instr.op().name() == "unitary"

@@ -525,6 +525,7 @@ impl PackedInstruction {
         clbits: Interned<[Clbit]>,
         params: Option<SmallVec<[Param; 3]>>,
         extra_attrs: ExtraInstructionAttributes,
+        #[cfg(feature = "cache_pygates")] py_op: OnceLock<PyObject>,
     ) -> Self {
         Self {
             op,
@@ -533,7 +534,7 @@ impl PackedInstruction {
             params: params.map(Box::new),
             extra_attrs,
             #[cfg(feature = "cache_pygates")]
-            py_op: OnceLock::new(),
+            py_op,
         }
     }
 
@@ -560,7 +561,7 @@ impl PackedInstruction {
 
     // Setters
 
-    /// Retrieves an immutable reference to the instruction's underlying operation.
+    /// Retrieves a mutable reference to the instruction's underlying operation.
     pub fn op_mut(&mut self) -> &mut PackedOperation {
         #[cfg(feature = "cache_pygates")]
         {
@@ -569,12 +570,12 @@ impl PackedInstruction {
         &mut self.op
     }
 
-    /// Retrieves an immutable reference to the index under which the interner has stored `qubits`.
+    /// Retrieves a mutable reference to the index under which the interner has stored `qubits`.
     pub fn qubits_mut(&mut self) -> &mut Interned<[Qubit]> {
         &mut self.qubits
     }
 
-    /// Retrieves an immutable reference to the index under which the interner has stored `clbits`.
+    /// Retrieves a mutable reference to the index under which the interner has stored `clbits`.
     pub fn clbits_mut(&mut self) -> &mut Interned<[Clbit]> {
         &mut self.clbits
     }

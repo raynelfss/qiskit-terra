@@ -1768,6 +1768,8 @@ def _format(operand):
                 clbits_id,
                 (!py_op.params.is_empty()).then_some(py_op.params),
                 py_op.extra_attrs,
+                #[cfg(feature = "cache_pygates")]
+                op.unbind().into(),
             );
 
             if check {
@@ -1820,6 +1822,8 @@ def _format(operand):
                 clbits_id,
                 (!py_op.params.is_empty()).then_some(py_op.params),
                 py_op.extra_attrs,
+                #[cfg(feature = "cache_pygates")]
+                op.unbind().into(),
             );
 
             if check {
@@ -5153,6 +5157,8 @@ impl DAGCircuit {
             self.cargs_interner.insert(cargs),
             params,
             extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            py_op,
         );
 
         if front {
@@ -5593,6 +5599,8 @@ impl DAGCircuit {
                 clbits,
                 params,
                 op_node.instruction.extra_attrs.clone(),
+                #[cfg(feature = "cache_pygates")]
+                op_node.instruction.py_op.clone(),
             );
             NodeType::Operation(inst)
         } else {
@@ -6190,6 +6198,8 @@ impl DAGCircuit {
                 (!new_gate.1.is_empty())
                     .then_some(new_gate.1.iter().map(|x| Param::Float(*x)).collect()),
                 ExtraInstructionAttributes::default(),
+                #[cfg(feature = "cache_pygates")]
+                OnceLock::new(),
             )
         } else {
             panic!("This method only works if provided index is an op node");
@@ -6285,6 +6295,8 @@ impl DAGCircuit {
                 self.cargs_interner.get_default(),
                 (!new_op.params.is_empty()).then_some(new_op.params),
                 new_op.extra_attrs,
+                #[cfg(feature = "cache_pygates")]
+                py_op,
             );
             let new_index = self.dag.add_node(NodeType::Operation(inst));
             self.dag.add_edge(source, new_index, weight.clone());
@@ -6724,6 +6736,8 @@ impl DAGCircuit {
                     new_cargs,
                     (!instr.params_view().is_empty()).then_some(instr.params_view().into()),
                     instr.extra_attrs().clone(),
+                    #[cfg(feature = "cache_pygates")]
+                    OnceLock::new(),
                 ))
             })
             .collect::<PyResult<Vec<_>>>()?;
@@ -6856,6 +6870,8 @@ impl DAGCircuit {
             clbits,
             (!py_op.params.is_empty()).then_some(py_op.params),
             py_op.extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            op.unbind().into(),
         ));
 
         let new_node = self
@@ -6983,6 +6999,8 @@ impl DAGCircuit {
             old_packed.clbits(),
             (!new_op.params.is_empty()).then_some(new_op.params),
             extra_attrs,
+            #[cfg(feature = "cache_pygates")]
+            py_op_cache.map(OnceLock::from).unwrap_or_default(),
         ));
         if let Some(weight) = self.dag.node_weight_mut(node_index) {
             *weight = new_weight;

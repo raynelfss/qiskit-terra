@@ -304,6 +304,8 @@ impl CircuitData {
                     inst.clbits(),
                     (!inst.params_view().is_empty()).then_some(inst.params_view().into()),
                     inst.extra_attrs().clone(),
+                    #[cfg(feature = "cache_pygates")]
+                    OnceLock::new(),
                 ));
             }
         } else if copy_instructions {
@@ -314,6 +316,8 @@ impl CircuitData {
                     inst.clbits(),
                     (!inst.params_view().is_empty()).then_some(inst.params_view().into()),
                     inst.extra_attrs().clone(),
+                    #[cfg(feature = "cache_pygates")]
+                    OnceLock::new(),
                 ));
             }
         } else {
@@ -693,6 +697,8 @@ impl CircuitData {
                     clbits_id,
                     (!inst.params_view().is_empty()).then_some(inst.params_view().into()),
                     inst.extra_attrs().clone(),
+                    #[cfg(feature = "cache_pygates")]
+                    inst.py_op.clone(),
                 ));
                 self.track_instruction_parameters(py, new_index)?;
             }
@@ -940,6 +946,8 @@ impl CircuitData {
                 clbits,
                 params,
                 ExtraInstructionAttributes::default(),
+                #[cfg(feature = "cache_pygates")]
+                OnceLock::new(),
             ));
             res.track_instruction_parameters(py, res.data.len() - 1)?;
         }
@@ -1047,6 +1055,8 @@ impl CircuitData {
                 no_clbit_index,
                 params,
                 ExtraInstructionAttributes::default(),
+                #[cfg(feature = "cache_pygates")]
+                OnceLock::new(),
             ));
             res.track_instruction_parameters(py, res.data.len() - 1)?;
         }
@@ -1103,6 +1113,8 @@ impl CircuitData {
             no_clbit_index,
             params,
             ExtraInstructionAttributes::default(),
+            #[cfg(feature = "cache_pygates")]
+            OnceLock::new(),
         ));
         Ok(())
     }
@@ -1197,6 +1209,8 @@ impl CircuitData {
             clbits,
             (!inst.params.is_empty()).then_some(inst.params.clone()),
             inst.extra_attrs.clone(),
+            #[cfg(feature = "cache_pygates")]
+            inst.py_op.clone(),
         ))
     }
 

@@ -125,6 +125,8 @@ pub fn dag_to_circuit(
                             .collect(),
                     ),
                     instr.extra_attrs().clone(),
+                    #[cfg(feature = "cache_pygates")]
+                    OnceLock::new(),
                 ))
             } else {
                 Ok(instr.clone())

@@ -208,6 +208,8 @@ fn twirl_gate(
             circ.cargs_interner().get_default(),
             None,
             ExtraInstructionAttributes::default(),
+            #[cfg(feature = "cache_pygates")]
+            std::sync::OnceLock::new(),
         ),
     )?;
     out_circ.push(
@@ -218,6 +220,8 @@ fn twirl_gate(
             circ.cargs_interner().get_default(),
             None,
             ExtraInstructionAttributes::default(),
+            #[cfg(feature = "cache_pygates")]
+            std::sync::OnceLock::new(),
         ),
     )?;
 
@@ -230,6 +234,8 @@ fn twirl_gate(
             circ.cargs_interner().get_default(),
             None,
             ExtraInstructionAttributes::default(),
+            #[cfg(feature = "cache_pygates")]
+            std::sync::OnceLock::new(),
         ),
     )?;
     out_circ.push(
@@ -240,6 +246,8 @@ fn twirl_gate(
             circ.cargs_interner().get_default(),
             None,
             ExtraInstructionAttributes::default(),
+            #[cfg(feature = "cache_pygates")]
+            std::sync::OnceLock::new(),
         ),
     )?;
 
@@ -352,6 +360,8 @@ fn generate_twirled_circuit(
                                 .collect::<SmallVec<[Param; 3]>>(),
                         ),
                         inst.extra_attrs().clone(),
+                        #[cfg(feature = "cache_pygates")]
+                        std::sync::OnceLock::new(),
                     );
                     #[cfg(feature = "cache_pygates")]
                     new_inst.py_op.set(new_inst_obj).unwrap();
