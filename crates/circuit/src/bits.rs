@@ -38,8 +38,20 @@ impl Display for Bit {
 
 macro_rules! create_bit {
     ($name:ident) => {
-        #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $name(Bit);
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl $name {
+            pub fn new() -> Self {
+                Self(Bit())
+            }
+        }
 
         impl Deref for $name {
             type Target = Bit;
@@ -63,13 +75,11 @@ macro_rules! create_bit {
     };
 }
 
-#[pyclass(name = "Bit", subclass)]
+#[pyclass(name = "Bit", subclass, module = "qiskit.circuit.bit")]
 #[derive(Debug, Clone)]
 pub struct PyBit {
     inner_bit: Bit,
-    #[pyo3(get)]
     index: Option<u32>,
-    #[pyo3(get)]
     register: Option<PyObject>,
 }
 
@@ -79,36 +89,7 @@ impl PyBit {
     #[pyo3(signature = (register=None, index=None,))]
     pub fn py_new(py: Python, register: Option<PyObject>, index: Option<i32>) -> PyResult<Self> {
         let inner_bit = Bit();
-        match (register, index) {
-            (None, None) => Ok(Self {
-                inner_bit,
-                index: None,
-                register: None,
-            }),
-            (Some(reg), Some(idx)) => {
-                let size: u32 = reg.getattr(py, intern!(py, "size"))?.extract(py)?;
-                if idx >= size.try_into().unwrap() {
-                    return Err(CircuitError::new_err(format!(
-                        "index must be under the size of the register: {idx} was provided"
-                    )));
-                }
-                let index: Option<u32> = index.map(|index| {
-                    if index.is_negative() {
-                        size - index as u32
-                    } else {
-                        index as u32
-                    }
-                });
-                Ok(Self {
-                    inner_bit: Bit(),
-                    index,
-                    register: Some(reg),
-                })
-            }
-            _ => Err(CircuitError::new_err(
-                "You should provide both an index and a register, not just one of them.",
-            )),
-        }
+        Self::new(py, inner_bit, register, index)
     }
 
     fn __eq__<'py>(slf: Bound<'py, Self>, other: Bound<'py, PyBit>) -> PyResult<bool> {
@@ -143,18 +124,25 @@ impl PyBit {
     fn __deepcopy__<'py>(
         slf: Bound<'py, Self>,
         memo: Option<Bound<'py, PyDict>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<Bound<'py, PyBit>> {
         let py = slf.py();
         let borrowed: PyRef<Self> = slf.borrow();
         if borrowed.index.is_none() && borrowed.register.is_none() {
-            return Ok(slf.into_any());
+            return Ok(slf);
         }
-
+        let copy = slf
+            .get_type()
+            .call_method1("__new__", (slf.get_type(),))?
+            .downcast_into::<PyBit>()?;
+        let mut copy_mut = copy.borrow_mut();
         let copied_reg = DEEPCOPY
             .get_bound(py)
-            .call1((slf.getattr("register")?, memo))?;
-        println!("{}", copied_reg.repr()?);
-        slf.get_type().call1((copied_reg, borrowed.index))
+            .call1((borrowed.register.as_ref(), memo))?;
+
+        copy_mut.inner_bit = borrowed.inner_bit;
+        copy_mut.register = Some(copied_reg.into());
+        copy_mut.index = borrowed.index;
+        Ok(copy)
     }
 
     fn __hash__(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<isize> {
@@ -167,13 +155,67 @@ impl PyBit {
         borrowed.inner_bit.hash(&mut hasher);
         Ok(hasher.finish() as isize)
     }
+
+    fn __getstate__(slf: PyRef<'_, Self>) -> (Option<PyObject>, Option<u32>) {
+        (
+            slf.register.as_ref().map(|reg| reg.clone_ref(slf.py())),
+            slf.index.as_ref().copied(),
+        )
+    }
+
+    fn __setstate__(mut slf: PyRefMut<'_, Self>, state: (Option<PyObject>, Option<u32>)) {
+        slf.register = state.0;
+        slf.index = state.1;
+    }
+}
+
+impl PyBit {
+    pub(crate) fn new(
+        py: Python,
+        inner_bit: Bit,
+        register: Option<PyObject>,
+        index: Option<i32>,
+    ) -> PyResult<Self> {
+        match (register, index) {
+            (None, None) => Ok(Self {
+                inner_bit,
+                index: None,
+                register: None,
+            }),
+            (Some(reg), Some(idx)) => {
+                let size: u32 = reg.getattr(py, intern!(py, "size"))?.extract(py)?;
+                if idx >= size.try_into().unwrap() {
+                    return Err(CircuitError::new_err(format!(
+                        "index must be under the size of the register: {idx} was provided"
+                    )));
+                }
+                let index: Option<u32> = index.map(|index| {
+                    if index.is_negative() {
+                        size - index as u32
+                    } else {
+                        index as u32
+                    }
+                });
+                Ok(Self {
+                    inner_bit: Bit(),
+                    index,
+                    register: Some(reg),
+                })
+            }
+            _ => Err(CircuitError::new_err(
+                "You should provide both an index and a register, not just one of them.",
+            )),
+        }
+    }
 }
 
 macro_rules! create_py_bit {
-    ($name:ident, $pyname:literal) => {
-        #[pyclass(name=$pyname, extends=PyBit, subclass)]
+    ($name:ident, $type:ty, $pyname:literal, $module:literal) => {
+        #[pyclass(name=$pyname, extends=PyBit, subclass, module=$module)]
         #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-        pub struct $name;
+        pub struct $name {
+            inner_bit: $type,
+        }
 
         #[pymethods]
         impl $name {
@@ -184,7 +226,11 @@ macro_rules! create_py_bit {
                 register: Option<PyObject>,
                 index: Option<i32>,
             ) -> PyResult<(Self, PyBit)> {
-                Ok((Self {}, PyBit::py_new(py, register, index)?))
+                let inner_bit: $type = <$type>::new();
+                Ok((
+                    Self { inner_bit },
+                    PyBit::new(py, inner_bit.0, register, index)?,
+                ))
             }
         }
     };
@@ -195,5 +241,5 @@ create_bit! {QubitObject}
 create_bit! {ClbitObject}
 
 // Create python instances
-create_py_bit! {PyQubit, "Qubit"}
-create_py_bit! {PyClbit, "Clbit"}
+create_py_bit! {PyQubit, QubitObject, "Qubit", "qiskit.circuit.quantumregister"}
+create_py_bit! {PyClbit, ClbitObject, "Clbit", "qiskit.circuit.classicalregister"}
