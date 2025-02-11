@@ -392,14 +392,6 @@ where
         }
     }
 
-    /// Checks whether an item is already packed in the interner
-    pub fn contains(&self, value: &T) -> bool
-    where
-        T: Hash + Eq,
-    {
-        self.0.contains(value)
-    }
-
     /// Retrieves interner index of anitem if it exists
     pub fn get_interned(&self, value: &T) -> Option<Interned<T>>
     where

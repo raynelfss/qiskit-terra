@@ -221,6 +221,7 @@ pub struct PyRegister {
 #[pymethods]
 impl PyRegister {
     #[new]
+    #[pyo3(signature = (size = None, name = None, bits = None))]
     pub fn new(
         py: Python,
         mut size: Option<u32>,
@@ -249,7 +250,7 @@ impl PyRegister {
             name = Some(format!("{}{}", "reg", count));
         }
         if let Some(bits) = bits {
-            if size != Some(PySet::new_bound(py, bits.iter())?.len() as u32) {
+            if size != Some(PySet::new(py, bits.iter())?.len() as u32) {
                 return Err(CircuitError::new_err(format!(
                     "Register bits must not be duplicated. bits={:?}",
                     bits
@@ -322,17 +323,17 @@ impl PyRegister {
                     crate::slice::SequenceIndex::Int(idx) => {
                         Ok(self.bits[idx].clone_ref(py).into_any())
                     }
-                    _ => Ok(PyList::new_bound(
+                    _ => Ok(PyList::new(
                         py,
                         sequence.iter().map(|idx| self.bits[idx].clone_ref(py)),
-                    )
+                    )?
                     .into()),
                 }
             }
             SliceOrInt::List(vec) => {
                 if vec.iter().max() < Some(&(self.size as usize)) {
                     Ok(
-                        PyList::new_bound(py, vec.iter().map(|idx| self.bits[*idx].clone_ref(py)))
+                        PyList::new(py, vec.iter().map(|idx| self.bits[*idx].clone_ref(py)))?
                             .into(),
                     )
                 } else {
@@ -360,33 +361,35 @@ impl PyRegister {
     }
 
     fn __iter__<'py>(&'py self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyIterator>> {
-        PyList::new_bound(py, self.bits.iter().map(|obj| obj.clone_ref(py)))
+        PyList::new(py, self.bits.iter().map(|obj| obj.clone_ref(py)))?
             .into_any()
-            .iter()
+            .try_iter()
     }
 
-    fn __getnewargs__(&self, py: Python) -> (Option<u32>, String, PyObject) {
-        (
+    fn __getnewargs__(&self, py: Python) -> PyResult<(Option<u32>, String, PyObject)> {
+        Ok((
             None,
             self.name.clone(),
             self.bits
                 .iter()
                 .map(|bit| bit.clone_ref(py))
                 .collect::<Vec<_>>()
-                .into_py(py),
-        )
+                .into_pyobject(py)?
+                .into(),
+        ))
     }
 
-    fn __getstate__(&self, py: Python) -> (String, u32, PyObject) {
-        (
+    fn __getstate__(&self, py: Python) -> PyResult<(String, u32, PyObject)> {
+        Ok((
             self.name.clone(),
             self.size,
             self.bits
                 .iter()
                 .map(|bit| bit.clone_ref(py))
                 .collect::<Vec<_>>()
-                .into_py(py),
-        )
+                .into_pyobject(py)?
+                .into(),
+        ))
     }
 
     fn __setstate__(&mut self, py: Python, state: (String, u32, PyObject)) -> PyResult<()> {
@@ -437,6 +440,7 @@ pub struct PyQuantumRegister();
 #[pymethods]
 impl PyQuantumRegister {
     #[new]
+    #[pyo3(signature = (size = None, name = None, bits = None))]
     pub fn new(
         py: Python,
         mut size: Option<u32>,
@@ -511,6 +515,7 @@ pub struct PyClassicalRegister();
 #[pymethods]
 impl PyClassicalRegister {
     #[new]
+    #[pyo3(signature = (size = None, name = None, bits = None))]
     pub fn new(
         py: Python,
         mut size: Option<u32>,
